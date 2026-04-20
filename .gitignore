@@ -1,5 +1,6 @@
 .tmp
 .idea
 dist/
+clawlet
 
 .env

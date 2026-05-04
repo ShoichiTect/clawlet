@@ -189,8 +189,34 @@ Provider authentication and model selection are functional but awkward for maint
 
 ### Proposal
 
-- Add `clawlet agent --model` first.
+#### A. Model visibility (`clawlet model`)
+
+Today `clawlet status` is the only way to see the active model, and it's buried in a wall of config output.
+
+- Add `clawlet model` (or `clawlet model show`) — concise one-line output:
+  `model: openai-codex/gpt-5.2 (provider: openai-codex, base: https://chatgpt.com/backend-api)`
+- Add `clawlet model list` — list known model prefixes and their default base URLs:
+  ```
+  openai/           → https://api.openai.com/v1
+  openai-codex/     → https://chatgpt.com/backend-api (OAuth)
+  openrouter/       → https://openrouter.ai/api/v1
+  anthropic/        → https://api.anthropic.com
+  gemini/           → https://generativelanguage.googleapis.com/v1beta
+  ollama/ (local/)  → http://localhost:11434/v1
+  shengsuanyun/     → https://router.shengsuanyun.com/api/v1
+  novita/           → https://api.novita.ai/openai
+  ```
+- Add `clawlet model set <model>` — write into `agents.defaults.model` in config.json, then print the new effective config.
+
+#### B. CLI flag override (`clawlet agent --model`)
+
+- Add `clawlet agent --model` — overrides config for a single invocation without touching config.json.
 - Optionally add `--max-tokens` and `--temperature` later if needed.
+- `--model` takes the same `<prefix>/<name>` format (e.g. `openrouter/anthropic/claude-sonnet-4-5`).
+- When `--model` is given, the OAuth flow is automatically selected for `openai-codex/`.
+
+#### C. Provider management
+
 - Add:
   - `clawlet provider whoami openai-codex`
   - `clawlet provider logout openai-codex`

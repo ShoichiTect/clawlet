@@ -1,9 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -96,14 +97,21 @@ func runSingle(ctx context.Context, a *agent.Agent, msg string, userStyle, agent
 }
 
 func runInteractive(ctx context.Context, a *agent.Agent, userStyle, agentStyle, errStyle, dimStyle *color.Color) error {
-	in := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Println(userStyle.Sprint("--- user ---"))
-		if !in.Scan() {
-			break
+		// readMultiline reads raw input; Ctrl+J inserts newline, Enter submits.
+		text, err := readMultiline("> ", "  ")
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			fmt.Fprintln(os.Stderr, errStyle.Sprintf("input error: %v", err))
+			continue
 		}
-		line := strings.TrimSpace(in.Text())
+
+		line := strings.TrimSpace(text)
 		if line == "" {
+			// Ctrl+C or empty submit → skip
 			continue
 		}
 		if line == "/exit" || line == "/quit" {
@@ -119,5 +127,5 @@ func runInteractive(ctx context.Context, a *agent.Agent, userStyle, agentStyle, 
 		fmt.Println(out)
 		fmt.Fprintln(os.Stderr, dimStyle.Sprintf("(took %s)", time.Since(start).Truncate(time.Millisecond)))
 	}
-	return in.Err()
+	return nil
 }

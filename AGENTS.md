@@ -10,7 +10,10 @@
 ## Build, Test, and Development Commands
 
 ```bash
-# Build a local binary
+# Install/update the binary (recommended for daily use)
+go install ./cmd/clawlet
+
+# Build a local binary (for trying without install, CI, or distribution)
 go build -o clawlet ./cmd/clawlet
 
 # Run from source

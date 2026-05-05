@@ -26,6 +26,23 @@ type Options struct {
 	SessionKey   string
 	MaxIters     int
 	Verbose      bool
+	ToolObserver func(ToolEvent)
+}
+
+type ToolPhase int
+
+const (
+	ToolStart ToolPhase = iota
+	ToolEnd
+)
+
+type ToolEvent struct {
+	Phase    ToolPhase
+	Name     string
+	Args     string
+	Output   string
+	Error    string
+	Duration time.Duration
 }
 
 type Agent struct {
@@ -38,8 +55,9 @@ type Agent struct {
 	llm   *llm.Client
 	tools *tools.Registry
 
-	sessionDir string
-	sess       *session.Session
+	sessionDir   string
+	sess         *session.Session
+	toolObserver func(ToolEvent)
 
 	consolidationMu      sync.Mutex
 	consolidationRunning bool
@@ -114,6 +132,7 @@ func New(opts Options) (*Agent, error) {
 		tools:        treg,
 		sessionDir:   sdir,
 		sess:         sess,
+		toolObserver: opts.ToolObserver,
 	}, nil
 }
 
@@ -144,14 +163,26 @@ func (a *Agent) Process(ctx context.Context, input string) (string, error) {
 				toolsUsed = append(toolsUsed, tc.Name)
 			}
 			messages = appendToolRound(messages, res.Content, res.ToolCalls, func(tc llm.ToolCall) string {
-				if a.verbose {
-					fmt.Fprintf(os.Stderr, "tool: %s %s\n", tc.Name, previewJSON(tc.Arguments, 200))
+				argsPreview := previewJSON(tc.Arguments, 200)
+				if a.toolObserver != nil {
+					a.toolObserver(ToolEvent{Phase: ToolStart, Name: tc.Name, Args: argsPreview})
 				}
+				start := time.Now()
 				out, err := a.tools.Execute(ctx, tools.Context{
 					Channel:    "cli",
 					ChatID:     "direct",
 					SessionKey: a.sess.Key,
 				}, tc.Name, tc.Arguments)
+				dur := time.Since(start)
+				if a.toolObserver != nil {
+					ev := ToolEvent{Phase: ToolEnd, Name: tc.Name, Duration: dur}
+					if err != nil {
+						ev.Error = err.Error()
+					} else {
+						ev.Output = out
+					}
+					a.toolObserver(ev)
+				}
 				if err != nil {
 					return "error: " + err.Error()
 				}

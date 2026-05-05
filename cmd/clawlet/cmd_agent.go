@@ -45,7 +45,7 @@ func cmdAgent() *cli.Command {
 			observer := func(ev agent.ToolEvent) {
 				switch ev.Phase {
 				case agent.ToolStart:
-					fmt.Printf("%s %s %s\n", toolStyle.Sprint("tool>"), ev.Name, ev.Args)
+					fmt.Println(toolStyle.Sprintf("--- tool --- %s %s", ev.Name, ev.Args))
 				case agent.ToolEnd:
 					if ev.Error != "" {
 						fmt.Println(errStyle.Sprintf("(error) %s", ev.Error))
@@ -81,14 +81,16 @@ func cmdAgent() *cli.Command {
 }
 
 func runSingle(ctx context.Context, a *agent.Agent, msg string, userStyle, agentStyle, errStyle, dimStyle *color.Color) error {
-	fmt.Printf("%s %s\n", userStyle.Sprint("user>"), msg)
+	fmt.Println(userStyle.Sprint("--- user ---"))
+	fmt.Println(msg)
 	start := time.Now()
 	out, err := a.Process(ctx, msg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, errStyle.Sprintf("error: %v", err))
 		return err
 	}
-	fmt.Printf("%s %s\n", agentStyle.Sprint("agent>"), out)
+	fmt.Println(agentStyle.Sprint("--- agent ---"))
+	fmt.Println(out)
 	fmt.Fprintln(os.Stderr, dimStyle.Sprintf("(took %s)", time.Since(start).Truncate(time.Millisecond)))
 	return nil
 }
@@ -96,7 +98,7 @@ func runSingle(ctx context.Context, a *agent.Agent, msg string, userStyle, agent
 func runInteractive(ctx context.Context, a *agent.Agent, userStyle, agentStyle, errStyle, dimStyle *color.Color) error {
 	in := bufio.NewScanner(os.Stdin)
 	for {
-		fmt.Print(userStyle.Sprint("user> "))
+		fmt.Println(userStyle.Sprint("--- user ---"))
 		if !in.Scan() {
 			break
 		}
@@ -113,7 +115,8 @@ func runInteractive(ctx context.Context, a *agent.Agent, userStyle, agentStyle, 
 			fmt.Fprintln(os.Stderr, errStyle.Sprintf("error: %v", err))
 			continue
 		}
-		fmt.Printf("%s %s\n", agentStyle.Sprint("agent>"), out)
+		fmt.Println(agentStyle.Sprint("--- agent ---"))
+		fmt.Println(out)
 		fmt.Fprintln(os.Stderr, dimStyle.Sprintf("(took %s)", time.Since(start).Truncate(time.Millisecond)))
 	}
 	return in.Err()

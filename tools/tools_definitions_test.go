@@ -46,7 +46,6 @@ func TestRegistryDefinitions_GatedByCapabilities(t *testing.T) {
 		WorkspaceDir:        "/tmp",
 		RestrictToWorkspace: false,
 		ExecTimeout:         1 * time.Second,
-		Cron:                nil,
 		ReadSkill:           nil,
 	}
 
@@ -66,7 +65,7 @@ func TestRegistryDefinitions_GatedByCapabilities(t *testing.T) {
 	}
 
 	// Capability-gated.
-	for _, n := range []string{"cron", "read_skill", "find_skills", "install_skill", "memory_search", "memory_get"} {
+	for _, n := range []string{"read_skill", "find_skills", "install_skill", "memory_search", "memory_get"} {
 		if has[n] {
 			t.Fatalf("did not expect tool definition: %s", n)
 		}

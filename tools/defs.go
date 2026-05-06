@@ -149,30 +149,6 @@ func defInstallSkill() llm.ToolDefinition {
 	}
 }
 
-func defCron() llm.ToolDefinition {
-	return llm.ToolDefinition{
-		Type: "function",
-		Function: llm.FunctionDefinition{
-			Name:        "cron",
-			Description: "Schedule reminders and recurring tasks. Actions: add, list, remove.",
-			Parameters: llm.JSONSchema{
-				Type: "object",
-				Properties: map[string]llm.JSONSchema{
-					"action": {
-						Type: "string",
-						Enum: []string{"add", "list", "remove"},
-					},
-					"message":       {Type: "string"},
-					"every_seconds": {Type: "integer"},
-					"cron_expr":     {Type: "string"},
-					"job_id":        {Type: "string"},
-				},
-				Required: []string{"action"},
-			},
-		},
-	}
-}
-
 func defMemorySearch() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Type: "function",

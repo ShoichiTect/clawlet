@@ -31,14 +31,6 @@ func SessionsDir() string {
 	return filepath.Join(dir, "sessions")
 }
 
-func CronStorePath() string {
-	dir, err := ConfigDir()
-	if err != nil {
-		return ".clawlet/cron.json"
-	}
-	return filepath.Join(dir, "cron.json")
-}
-
 func WorkspaceDir() string {
 	dir, err := ConfigDir()
 	if err != nil {

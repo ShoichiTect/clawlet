@@ -18,10 +18,8 @@ func main() {
 			cmdOnboard(),
 			cmdStatus(),
 			cmdAgent(),
-			cmdGateway(),
 			cmdTUI(),
 			cmdProvider(),
-			cmdCron(),
 		},
 	}
 

@@ -20,16 +20,16 @@ const (
 )
 
 type codexRequest struct {
-	Model             string           `json:"model"`
-	Store             bool             `json:"store"`
-	Stream            bool             `json:"stream"`
-	Instructions      string           `json:"instructions"`
-	Input             []codexInputItem `json:"input"`
-	Text              codexTextConfig  `json:"text"`
-	Include           []string         `json:"include,omitempty"`
-	PromptCacheKey string      `json:"prompt_cache_key,omitempty"`
-	ToolChoice     string      `json:"tool_choice,omitempty"`
-	Tools          []codexTool `json:"tools,omitempty"`
+	Model          string           `json:"model"`
+	Store          bool             `json:"store"`
+	Stream         bool             `json:"stream"`
+	Instructions   string           `json:"instructions"`
+	Input          []codexInputItem `json:"input"`
+	Text           codexTextConfig  `json:"text"`
+	Include        []string         `json:"include,omitempty"`
+	PromptCacheKey string           `json:"prompt_cache_key,omitempty"`
+	ToolChoice     string           `json:"tool_choice,omitempty"`
+	Tools          []codexTool      `json:"tools,omitempty"`
 }
 
 type codexTextConfig struct {

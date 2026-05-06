@@ -291,26 +291,6 @@ func TestLoad_MediaDefaults(t *testing.T) {
 	}
 }
 
-func TestCronStorePathDefault(t *testing.T) {
-	cfg := Default()
-	if cfg.Cron.StorePath != ".clawlet/cron.json" {
-		t.Fatalf("default cron.storePath=%q", cfg.Cron.StorePath)
-	}
-
-	tmp := t.TempDir() + "/cfg.json"
-	cfg.Cron.StorePath = ""
-	if err := Save(tmp, cfg); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	loaded, err := Load(tmp)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if loaded.Cron.StorePath != ".clawlet/cron.json" {
-		t.Fatalf("loaded cron.storePath=%q", loaded.Cron.StorePath)
-	}
-}
-
 func TestSkillsRegistryDefaults(t *testing.T) {
 	cfg := Default()
 	if cfg.Tools.Skills.EnabledValue() {

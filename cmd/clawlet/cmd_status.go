@@ -33,10 +33,6 @@ func cmdStatus() *cli.Command {
 			fmt.Printf("tools.skills.enabled: %v\n", cfg.Tools.Skills.EnabledValue())
 			fmt.Printf("tools.skills.registry.baseURL: %s\n", cfg.Tools.Skills.Registry.BaseURL)
 			fmt.Printf("tools.skills.registry.authToken: %v\n", cfg.Tools.Skills.Registry.AuthToken != "")
-			fmt.Printf("cron.enabled: %v\n", cfg.Cron.EnabledValue())
-			fmt.Printf("cron.storePath: %s\n", cfg.Cron.StorePath)
-			fmt.Printf("heartbeat.enabled: %v\n", cfg.Heartbeat.EnabledValue())
-			fmt.Printf("heartbeat.intervalSec: %d\n", cfg.Heartbeat.IntervalSec)
 			return nil
 		},
 	}

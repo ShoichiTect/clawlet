@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mosaxiv/clawlet/cron"
 	"github.com/mosaxiv/clawlet/llm"
 	"github.com/mosaxiv/clawlet/memory"
 )
@@ -28,7 +27,6 @@ type Registry struct {
 	// Unknown tool names are ignored.
 	AllowTools []string
 
-	Cron *cron.Service
 	ReadSkill               func(name string) (string, bool)
 	SkillRegistry           SkillRegistry
 	SkillSearchDefaultLimit int
@@ -50,9 +48,6 @@ func (r *Registry) Definitions() []llm.ToolDefinition {
 	}
 	if r.SkillRegistry != nil {
 		defs = append(defs, defFindSkills(), defInstallSkill())
-	}
-	if r.Cron != nil {
-		defs = append(defs, defCron())
 	}
 	if r.MemorySearch != nil {
 		defs = append(defs, defMemorySearch(), defMemoryGet())
@@ -168,18 +163,6 @@ func (r *Registry) Execute(ctx context.Context, tctx Context, name string, args 
 			return "", err
 		}
 		return r.installSkill(ctx, a.Slug, a.Registry, a.Version, a.Force)
-	case "cron":
-		var a struct {
-			Action       string `json:"action"`
-			Message      string `json:"message"`
-			EverySeconds int    `json:"every_seconds"`
-			CronExpr     string `json:"cron_expr"`
-			JobID        string `json:"job_id"`
-		}
-		if err := json.Unmarshal(args, &a); err != nil {
-			return "", err
-		}
-		return r.cronTool(ctx, tctx, a.Action, a.Message, a.EverySeconds, a.CronExpr, a.JobID)
 	case "memory_search":
 		var a struct {
 			Query      string   `json:"query"`

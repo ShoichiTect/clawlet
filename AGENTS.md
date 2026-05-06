@@ -2,7 +2,7 @@
 
 ## Project Structure
 
-- `cmd/clawlet/`: CLI entrypoint (`clawlet agent`, `gateway`, `onboard`, `cron`, etc.)
+- `cmd/clawlet/`: CLI entrypoint (`clawlet agent`, `onboard`, `cron`, etc.)
 - Core modules: `agent/`, `tools/`, `llm/`, `channels/`, `bus/`, `session/`, `memory/`, `skills/`
 - Config and state helpers: `config/`, `paths/`
 - Tests live next to code as `*_test.go` (e.g. `tools/`, `config/`, `heartbeat/`).
@@ -45,6 +45,4 @@ go vet ./...
 - If behavior changes, update `README.md` (and keep diagrams consistent with code).
 
 ## Notes
-
-- `gateway` mode is long-lived and routes chat messages via an in-memory bus; keep I/O and timeouts conservative.
 - Tools are security-sensitive; don’t broaden file or exec access without a clear rationale and tests.

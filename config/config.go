@@ -13,10 +13,8 @@ type Config struct {
 	// Agent configuration (model, iterations, etc.). Kept small on purpose.
 	Agents AgentsConfig `json:"agents"`
 
-	LLM       LLMConfig       `json:"llm"`
-	Tools     ToolsConfig     `json:"tools"`
-	Cron      CronConfig      `json:"cron"`
-	Heartbeat HeartbeatConfig `json:"heartbeat"`
+	LLM   LLMConfig   `json:"llm"`
+	Tools ToolsConfig `json:"tools"`
 }
 
 type LLMConfig struct {
@@ -226,30 +224,6 @@ func (c MediaToolsConfig) AttachmentEnabledValue() bool {
 	return *c.AttachmentEnabled
 }
 
-type CronConfig struct {
-	Enabled   *bool  `json:"enabled"`
-	StorePath string `json:"storePath,omitempty"`
-}
-
-func (c CronConfig) EnabledValue() bool {
-	if c.Enabled == nil {
-		return true
-	}
-	return *c.Enabled
-}
-
-type HeartbeatConfig struct {
-	Enabled     *bool `json:"enabled"`
-	IntervalSec int   `json:"intervalSec"`
-}
-
-func (c HeartbeatConfig) EnabledValue() bool {
-	if c.Enabled == nil {
-		return true
-	}
-	return *c.Enabled
-}
-
 const (
 	DefaultAgentMaxTokens                  = 8192
 	DefaultAgentTemperature                = 0.7
@@ -286,8 +260,6 @@ const (
 
 func Default() *Config {
 	restrict := true
-	cronEnabled := true
-	hbEnabled := true
 	memSearchEnabled := false
 	memSearchVectorEnabled := true
 	memSearchCacheEnabled := true
@@ -379,14 +351,6 @@ func Default() *Config {
 				DownloadTimeoutSec:  DefaultMediaDownloadTimeoutSec,
 			},
 		},
-		Cron: CronConfig{
-			Enabled:   &cronEnabled,
-			StorePath: filepath.Join(".clawlet", "cron.json"),
-		},
-		Heartbeat: HeartbeatConfig{
-			Enabled:     &hbEnabled,
-			IntervalSec: 30 * 60,
-		},
 	}
 }
 
@@ -475,22 +439,6 @@ func Load(path string) (*Config, error) {
 	if cfg.Tools.RestrictToWorkspace == nil {
 		v := true
 		cfg.Tools.RestrictToWorkspace = &v
-	}
-	if cfg.Cron.Enabled == nil {
-		v := true
-		cfg.Cron.Enabled = &v
-	}
-	cfg.Cron.StorePath = strings.TrimSpace(cfg.Cron.StorePath)
-	if cfg.Cron.StorePath == "" {
-		cfg.Cron.StorePath = filepath.Join(".clawlet", "cron.json")
-	}
-	if cfg.Heartbeat.IntervalSec <= 0 {
-		cfg.Heartbeat.IntervalSec = 30 * 60
-	}
-	if cfg.Heartbeat.Enabled == nil {
-		// Default to enabled when missing from config.
-		v := true
-		cfg.Heartbeat.Enabled = &v
 	}
 	if cfg.Agents.Defaults.MemorySearch.Enabled == nil {
 		v := false

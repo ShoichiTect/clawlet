@@ -28,11 +28,11 @@ const (
 )
 
 type inputState struct {
-	buffer    []rune // the full text including \n characters
-	cursor    int    // position in buffer (0..len(buffer))
-	prompt    string // "> "
-	cont      string // "  " (continuation prefix)
-	termW     int    // terminal width in columns
+	buffer []rune // the full text including \n characters
+	cursor int    // position in buffer (0..len(buffer))
+	prompt string // "> "
+	cont   string // "  " (continuation prefix)
+	termW  int    // terminal width in columns
 
 	// tracking for re-render positioning
 	lastCurLine int // cursor line position from last render

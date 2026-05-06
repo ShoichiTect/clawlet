@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/mosaxiv/clawlet/config"
@@ -106,22 +105,6 @@ func applyEnvOverrides(cfg *config.Config) {
 			cfg.Env = map[string]string{}
 		}
 		cfg.Env["SHENGSUANYUN_API_KEY"] = v
-	}
-	if v := strings.TrimSpace(os.Getenv("CLAWLET_WEB_ALLOWED_DOMAINS")); v != "" {
-		cfg.Tools.Web.AllowedDomains = splitCSV(v)
-	}
-	if v := strings.TrimSpace(os.Getenv("CLAWLET_WEB_BLOCKED_DOMAINS")); v != "" {
-		cfg.Tools.Web.BlockedDomains = splitCSV(v)
-	}
-	if v := strings.TrimSpace(os.Getenv("CLAWLET_WEB_MAX_RESPONSE_BYTES")); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			cfg.Tools.Web.MaxResponseBytes = n
-		}
-	}
-	if v := strings.TrimSpace(os.Getenv("CLAWLET_WEB_FETCH_TIMEOUT_SEC")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Tools.Web.FetchTimeoutSec = n
-		}
 	}
 	if v := os.Getenv("CLAWLET_SKILLS_REGISTRY_AUTH_TOKEN"); v != "" {
 		cfg.Tools.Skills.Registry.AuthToken = v

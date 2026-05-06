@@ -46,7 +46,6 @@ func TestRegistryDefinitions_GatedByCapabilities(t *testing.T) {
 		WorkspaceDir:        "/tmp",
 		RestrictToWorkspace: false,
 		ExecTimeout:         1 * time.Second,
-		BraveAPIKey:         "",
 		Cron:                nil,
 		ReadSkill:           nil,
 	}
@@ -60,14 +59,14 @@ func TestRegistryDefinitions_GatedByCapabilities(t *testing.T) {
 	}
 
 	// Always present.
-	for _, n := range []string{"read_file", "write_file", "edit_file", "list_dir", "exec", "web_fetch"} {
+	for _, n := range []string{"read_file", "write_file", "edit_file", "list_dir", "exec"} {
 		if !has[n] {
 			t.Fatalf("expected tool definition: %s", n)
 		}
 	}
 
 	// Capability-gated.
-	for _, n := range []string{"web_search", "cron", "read_skill", "find_skills", "install_skill", "memory_search", "memory_get"} {
+	for _, n := range []string{"cron", "read_skill", "find_skills", "install_skill", "memory_search", "memory_get"} {
 		if has[n] {
 			t.Fatalf("did not expect tool definition: %s", n)
 		}

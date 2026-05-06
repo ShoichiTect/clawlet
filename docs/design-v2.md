@@ -133,7 +133,6 @@ TUI は既知のプロジェクトディレクトリ群を走査し、`{dir}/.cl
 |---|---|
 | `read_file`, `write_file`, `edit_file`, `list_dir` | 変更なし |
 | `exec` | 変更なし |
-| `web_fetch`, `web_search` | 変更なし |
 | `read_skill`, `find_skills`, `install_skill` | 変更なし |
 | `memory_search`, `memory_get` | 変更なし |
 | `message` | **削除**（外部チャンネル廃止に伴い） |
@@ -294,13 +293,6 @@ paths/paths.go                         # 変更なし
   "tools": {
     "restrictToWorkspace": true,
     "exec": { "timeoutSec": 60 },
-    "web": {
-      "braveApiKey": "",
-      "allowedDomains": ["*"],
-      "blockedDomains": [],
-      "maxResponseBytes": 500000,
-      "fetchTimeoutSec": 30
-    },
     "skills": { /* ... 変更なし */ },
     "media": { /* ... 変更なし */ }
   }

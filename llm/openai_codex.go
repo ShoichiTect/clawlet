@@ -27,10 +27,9 @@ type codexRequest struct {
 	Input             []codexInputItem `json:"input"`
 	Text              codexTextConfig  `json:"text"`
 	Include           []string         `json:"include,omitempty"`
-	PromptCacheKey    string           `json:"prompt_cache_key,omitempty"`
-	ToolChoice        string           `json:"tool_choice,omitempty"`
-	ParallelToolCalls bool             `json:"parallel_tool_calls,omitempty"`
-	Tools             []codexTool      `json:"tools,omitempty"`
+	PromptCacheKey string      `json:"prompt_cache_key,omitempty"`
+	ToolChoice     string      `json:"tool_choice,omitempty"`
+	Tools          []codexTool `json:"tools,omitempty"`
 }
 
 type codexTextConfig struct {
@@ -82,10 +81,9 @@ func (c *Client) chatOpenAICodex(ctx context.Context, messages []Message, tools 
 		Text: codexTextConfig{
 			Verbosity: "medium",
 		},
-		Include:           []string{"reasoning.encrypted_content"},
-		PromptCacheKey:    codexPromptCacheKey(messages),
-		ToolChoice:        "auto",
-		ParallelToolCalls: true,
+		Include:        []string{"reasoning.encrypted_content"},
+		PromptCacheKey: codexPromptCacheKey(messages),
+		ToolChoice:     "auto",
 	}
 
 	if len(tools) > 0 {

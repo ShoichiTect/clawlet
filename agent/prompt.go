@@ -32,9 +32,9 @@ func BuildSystemPrompt(opts PromptOpts) string {
 	b.WriteString("You are clawlet, a helpful AI assistant.\n")
 
 	if opts.Channel == "" {
-		b.WriteString("You can use tools to read/write/edit files, list directories, execute shell commands, and fetch/search the web.\n\n")
+		b.WriteString("You can use tools to read/write/edit files, list directories, and execute shell commands.\n\n")
 	} else {
-		b.WriteString("You can use tools to read/write/edit files, list directories, execute shell commands, fetch/search the web, and schedule tasks.\n\n")
+		b.WriteString("You can use tools to read/write/edit files, list directories, execute shell commands, and schedule tasks.\n\n")
 	}
 	b.WriteString("IMPORTANT: Reply with plain text.\n\n")
 

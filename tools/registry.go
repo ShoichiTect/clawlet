@@ -28,12 +28,7 @@ type Registry struct {
 	// Unknown tool names are ignored.
 	AllowTools []string
 
-	BraveAPIKey             string
-	WebFetchAllowedDomains  []string
-	WebFetchBlockedDomains  []string
-	WebFetchMaxResponse     int64
-	WebFetchTimeout         time.Duration
-	Cron                    *cron.Service
+	Cron *cron.Service
 	ReadSkill               func(name string) (string, bool)
 	SkillRegistry           SkillRegistry
 	SkillSearchDefaultLimit int
@@ -49,16 +44,12 @@ func (r *Registry) Definitions() []llm.ToolDefinition {
 		defEditFile(),
 		defListDir(),
 		defExec(),
-		defWebFetch(),
 	}
 	if r.ReadSkill != nil {
 		defs = append(defs, defReadSkill())
 	}
 	if r.SkillRegistry != nil {
 		defs = append(defs, defFindSkills(), defInstallSkill())
-	}
-	if strings.TrimSpace(r.BraveAPIKey) != "" {
-		defs = append(defs, defWebSearch())
 	}
 	if r.Cron != nil {
 		defs = append(defs, defCron())
@@ -177,26 +168,6 @@ func (r *Registry) Execute(ctx context.Context, tctx Context, name string, args 
 			return "", err
 		}
 		return r.installSkill(ctx, a.Slug, a.Registry, a.Version, a.Force)
-	case "web_fetch":
-		var a struct {
-			URL         string            `json:"url"`
-			ExtractMode string            `json:"extractMode"`
-			MaxChars    int               `json:"maxChars"`
-			Headers     map[string]string `json:"headers"`
-		}
-		if err := json.Unmarshal(args, &a); err != nil {
-			return "", err
-		}
-		return r.webFetch(ctx, a.URL, a.ExtractMode, a.MaxChars, a.Headers)
-	case "web_search":
-		var a struct {
-			Query string `json:"query"`
-			Count int    `json:"count"`
-		}
-		if err := json.Unmarshal(args, &a); err != nil {
-			return "", err
-		}
-		return r.webSearch(ctx, a.Query, a.Count)
 	case "cron":
 		var a struct {
 			Action       string `json:"action"`

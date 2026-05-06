@@ -1,8 +1,6 @@
 package tools
 
 import (
-	"encoding/json"
-
 	"github.com/mosaxiv/clawlet/llm"
 )
 
@@ -146,49 +144,6 @@ func defInstallSkill() llm.ToolDefinition {
 					"force":    {Type: "boolean", Description: "Reinstall even when target already exists."},
 				},
 				Required: []string{"slug", "registry"},
-			},
-		},
-	}
-}
-
-func defWebFetch() llm.ToolDefinition {
-	return llm.ToolDefinition{
-		Type: "function",
-		Function: llm.FunctionDefinition{
-			Name:        "web_fetch",
-			Description: "Fetch a URL and extract readable content (subject to web domain and response-size policy).",
-			Parameters: llm.JSONSchema{
-				Type: "object",
-				Properties: map[string]llm.JSONSchema{
-					"url": {Type: "string"},
-					"extractMode": {
-						Type: "string",
-						Enum: []string{"markdown", "text"},
-					},
-					"maxChars": {Type: "integer", Description: "Max characters in extracted text (default 50000)."},
-					"headers": {
-						Raw: json.RawMessage(`{"type":"object","description":"HTTP request headers to include (e.g. {\"Authorization\":\"Bearer token\"}).","additionalProperties":{"type":"string"}}`),
-					},
-				},
-				Required: []string{"url"},
-			},
-		},
-	}
-}
-
-func defWebSearch() llm.ToolDefinition {
-	return llm.ToolDefinition{
-		Type: "function",
-		Function: llm.FunctionDefinition{
-			Name:        "web_search",
-			Description: "Search the web (Brave Search API). Returns titles, URLs, and snippets.",
-			Parameters: llm.JSONSchema{
-				Type: "object",
-				Properties: map[string]llm.JSONSchema{
-					"query": {Type: "string"},
-					"count": {Type: "integer"},
-				},
-				Required: []string{"query"},
 			},
 		},
 	}

@@ -43,25 +43,6 @@ Safety notes:
 - Dangerous patterns are blocked
 - Output is truncated
 
-## Web Access
-
-### web_search
-Search the web using Brave Search API. Requires `tools.web.braveApiKey` in config.
-```text
-web_search(query: string, count?: int) -> string
-```
-
-### web_fetch
-Fetch a URL and extract readable content. Returns a JSON object string with fields like `status` and `text`.
-```text
-web_fetch(url: string, extractMode?: "markdown"|"text", maxChars?: int, headers?: {string: string}) -> string
-```
-
-Notes:
-- HTML extraction is best-effort (not readability)
-- Access is constrained by `tools.web.allowedDomains` / `tools.web.blockedDomains`
-- Response body size and timeout are controlled by `tools.web.maxResponseBytes` / `tools.web.fetchTimeoutSec`
-
 ## Communication
 
 ### message

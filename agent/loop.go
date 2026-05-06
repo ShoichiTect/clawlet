@@ -113,15 +113,10 @@ func NewLoop(opts LoopOptions) (*Loop, error) {
 	}
 
 	treg := &tools.Registry{
-		WorkspaceDir:           ws,
-		RestrictToWorkspace:    opts.Config.Tools.RestrictToWorkspaceValue(),
-		ExecTimeout:            time.Duration(opts.Config.Tools.Exec.TimeoutSec) * time.Second,
-		BraveAPIKey:            opts.Config.Tools.Web.BraveAPIKey,
-		WebFetchAllowedDomains: append([]string(nil), opts.Config.Tools.Web.AllowedDomains...),
-		WebFetchBlockedDomains: append([]string(nil), opts.Config.Tools.Web.BlockedDomains...),
-		WebFetchMaxResponse:    opts.Config.Tools.Web.MaxResponseBytes,
-		WebFetchTimeout:        time.Duration(opts.Config.Tools.Web.FetchTimeoutSec) * time.Second,
-		Cron:                   opts.Cron,
+		WorkspaceDir:        ws,
+		RestrictToWorkspace: opts.Config.Tools.RestrictToWorkspaceValue(),
+		ExecTimeout:         time.Duration(opts.Config.Tools.Exec.TimeoutSec) * time.Second,
+		Cron:                opts.Cron,
 		ReadSkill: func(name string) (string, bool) {
 			if sloader == nil {
 				return "", false

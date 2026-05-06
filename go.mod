@@ -10,7 +10,6 @@ require (
 	github.com/hashicorp/go-retryablehttp v0.7.8
 	github.com/ncruces/go-sqlite3 v0.30.5
 	github.com/urfave/cli/v3 v3.6.2
-	golang.org/x/net v0.50.0
 	golang.org/x/term v0.40.0
 )
 

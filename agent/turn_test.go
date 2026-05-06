@@ -99,9 +99,9 @@ func TestTurnRunner_Observer_NoTools(t *testing.T) {
 
 	var events []ToolEvent
 	tr := &TurnRunner{
-		LLM:    client,
-		Tools:  emptyTools(t),
-		MaxIters: 5,
+		LLM:          client,
+		Tools:        emptyTools(t),
+		MaxIters:     5,
 		MemoryWindow: 50,
 		Observer: func(ev ToolEvent) {
 			events = append(events, ev)
@@ -260,8 +260,8 @@ func TestBuildSystemPrompt_Gateway(t *testing.T) {
 	s := BuildSystemPrompt(PromptOpts{
 		Workspace:           ws,
 		RestrictToWorkspace: false,
-		Channel:             "discord",
-		ChatID:              "123",
+		Channel:             "tui",
+		ChatID:              "default",
 		IncludeRuntime:      false,
 	})
 	if !strings.Contains(s, "# clawlet") {
@@ -273,10 +273,10 @@ func TestBuildSystemPrompt_Gateway(t *testing.T) {
 	if !strings.Contains(s, "## Current Session") {
 		t.Fatal("missing Current Session section")
 	}
-	if !strings.Contains(s, "Channel: discord") {
-		t.Fatal("missing channel info")
+	if !strings.Contains(s, "Connection: tui") {
+		t.Fatal("missing connection info")
 	}
-	if !strings.Contains(s, "Chat ID: 123") {
+	if !strings.Contains(s, "Chat ID: default") {
 		t.Fatal("missing chat ID info")
 	}
 }

@@ -32,15 +32,11 @@ func BuildSystemPrompt(opts PromptOpts) string {
 	b.WriteString("You are clawlet, a helpful AI assistant.\n")
 
 	if opts.Channel == "" {
-		// CLI mode: simpler tool description.
 		b.WriteString("You can use tools to read/write/edit files, list directories, execute shell commands, and fetch/search the web.\n\n")
-		b.WriteString("IMPORTANT: Reply with plain text. Do not call the message tool.\n\n")
 	} else {
-		// Gateway mode: mentions message/spawn/cron tools.
-		b.WriteString("You can use tools to read/write/edit files, list directories, execute shell commands, fetch/search the web, schedule tasks, and spawn background subagents.\n\n")
-		b.WriteString("IMPORTANT: When replying to the current conversation, respond with plain text. Do not call the message tool.\n")
-		b.WriteString("Only use the message tool when you must send to a different channel/chat_id.\n\n")
+		b.WriteString("You can use tools to read/write/edit files, list directories, execute shell commands, fetch/search the web, and schedule tasks.\n\n")
 	}
+	b.WriteString("IMPORTANT: Reply with plain text.\n\n")
 
 	b.WriteString("## Current Time\n")
 	b.WriteString(now + "\n\n")
@@ -60,7 +56,7 @@ func BuildSystemPrompt(opts PromptOpts) string {
 
 	if opts.Channel != "" && opts.ChatID != "" {
 		b.WriteString("## Current Session\n")
-		b.WriteString("Channel: " + opts.Channel + "\nChat ID: " + opts.ChatID + "\n\n")
+		b.WriteString("Connection: " + opts.Channel + "\nChat ID: " + opts.ChatID + "\n\n")
 	}
 
 	// Bootstrap files from workspace (optional).
@@ -77,11 +73,13 @@ func BuildSystemPrompt(opts PromptOpts) string {
 	}
 
 	// Memory (long-term + today's notes).
-	mem := memory.New(opts.Workspace).GetContext()
-	if strings.TrimSpace(mem) != "" {
-		b.WriteString("# Memory\n\n")
-		b.WriteString(mem)
-		b.WriteString("\n\n")
+	if strings.TrimSpace(opts.Workspace) != "" {
+		mem := memory.New(opts.Workspace).GetContext()
+		if strings.TrimSpace(mem) != "" {
+			b.WriteString("# Memory\n\n")
+			b.WriteString(mem)
+			b.WriteString("\n\n")
+		}
 	}
 
 	// Skills summary (gateway only).

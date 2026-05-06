@@ -20,9 +20,6 @@ func (r *Registry) cronTool(ctx context.Context, tctx Context, action, message s
 		if message == "" {
 			return "", errors.New("message is required")
 		}
-		if tctx.Channel == "" || tctx.ChatID == "" {
-			return "", errors.New("no session context (channel/chat_id)")
-		}
 		var sched cron.Schedule
 		if everySeconds > 0 {
 			sched = cron.Schedule{Kind: "every", EveryMS: int64(everySeconds) * 1000}
@@ -32,11 +29,9 @@ func (r *Registry) cronTool(ctx context.Context, tctx Context, action, message s
 			return "", errors.New("either every_seconds or cron_expr is required")
 		}
 		payload := cron.Payload{
-			Kind:    "agent_turn",
-			Message: message,
-			Deliver: true,
-			Channel: tctx.Channel,
-			To:      tctx.ChatID,
+			Kind:       "agent_turn",
+			Message:    message,
+			SessionKey: tctx.SessionKey,
 		}
 		j, err := r.Cron.Add(shortName(message), sched, payload)
 		if err != nil {

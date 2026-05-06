@@ -39,14 +39,9 @@ func cmdStatus() *cli.Command {
 			fmt.Printf("tools.skills.registry.baseURL: %s\n", cfg.Tools.Skills.Registry.BaseURL)
 			fmt.Printf("tools.skills.registry.authToken: %v\n", cfg.Tools.Skills.Registry.AuthToken != "")
 			fmt.Printf("cron.enabled: %v\n", cfg.Cron.EnabledValue())
+			fmt.Printf("cron.storePath: %s\n", cfg.Cron.StorePath)
 			fmt.Printf("heartbeat.enabled: %v\n", cfg.Heartbeat.EnabledValue())
 			fmt.Printf("heartbeat.intervalSec: %d\n", cfg.Heartbeat.IntervalSec)
-			fmt.Printf("gateway.listen: %s\n", cfg.Gateway.Listen)
-			fmt.Printf("gateway.allowPublicBind: %v\n", cfg.Gateway.AllowPublicBind)
-			fmt.Printf("channels.discord.enabled: %v\n", cfg.Channels.Discord.Enabled)
-			fmt.Printf("channels.slack.enabled: %v\n", cfg.Channels.Slack.Enabled)
-			fmt.Printf("channels.telegram.enabled: %v\n", cfg.Channels.Telegram.Enabled)
-			fmt.Printf("channels.whatsapp.enabled: %v\n", cfg.Channels.WhatsApp.Enabled)
 			return nil
 		},
 	}

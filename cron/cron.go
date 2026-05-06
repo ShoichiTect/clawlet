@@ -22,11 +22,9 @@ type Schedule struct {
 }
 
 type Payload struct {
-	Kind    string `json:"kind"` // "agent_turn"
-	Message string `json:"message"`
-	Deliver bool   `json:"deliver"`
-	Channel string `json:"channel,omitempty"`
-	To      string `json:"to,omitempty"`
+	Kind       string `json:"kind"` // "agent_turn"
+	Message    string `json:"message"`
+	SessionKey string `json:"session_key,omitempty"`
 }
 
 type State struct {

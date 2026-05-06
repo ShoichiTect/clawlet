@@ -291,16 +291,14 @@ func TestLoad_MediaDefaults(t *testing.T) {
 	}
 }
 
-func TestGatewayDefaults_LocalhostAndNoPublicBind(t *testing.T) {
+func TestCronStorePathDefault(t *testing.T) {
 	cfg := Default()
-	if cfg.Gateway.Listen != "127.0.0.1:18790" {
-		t.Fatalf("default gateway.listen=%q", cfg.Gateway.Listen)
-	}
-	if cfg.Gateway.AllowPublicBind {
-		t.Fatalf("default gateway.allowPublicBind must be false")
+	if cfg.Cron.StorePath != ".clawlet/cron.json" {
+		t.Fatalf("default cron.storePath=%q", cfg.Cron.StorePath)
 	}
 
 	tmp := t.TempDir() + "/cfg.json"
+	cfg.Cron.StorePath = ""
 	if err := Save(tmp, cfg); err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -308,11 +306,8 @@ func TestGatewayDefaults_LocalhostAndNoPublicBind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if loaded.Gateway.Listen != "127.0.0.1:18790" {
-		t.Fatalf("loaded gateway.listen=%q", loaded.Gateway.Listen)
-	}
-	if loaded.Gateway.AllowPublicBind {
-		t.Fatalf("loaded gateway.allowPublicBind must be false")
+	if loaded.Cron.StorePath != ".clawlet/cron.json" {
+		t.Fatalf("loaded cron.storePath=%q", loaded.Cron.StorePath)
 	}
 }
 

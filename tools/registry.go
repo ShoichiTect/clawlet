@@ -3,13 +3,11 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/mosaxiv/clawlet/bus"
 	"github.com/mosaxiv/clawlet/cron"
 	"github.com/mosaxiv/clawlet/llm"
 	"github.com/mosaxiv/clawlet/memory"
@@ -35,8 +33,6 @@ type Registry struct {
 	WebFetchBlockedDomains  []string
 	WebFetchMaxResponse     int64
 	WebFetchTimeout         time.Duration
-	Outbound                func(ctx context.Context, msg bus.OutboundMessage) error
-	Spawn                   func(ctx context.Context, task, label, originChannel, originChatID string) (string, error)
 	Cron                    *cron.Service
 	ReadSkill               func(name string) (string, bool)
 	SkillRegistry           SkillRegistry
@@ -63,12 +59,6 @@ func (r *Registry) Definitions() []llm.ToolDefinition {
 	}
 	if strings.TrimSpace(r.BraveAPIKey) != "" {
 		defs = append(defs, defWebSearch())
-	}
-	if r.Outbound != nil {
-		defs = append(defs, defMessage())
-	}
-	if r.Spawn != nil {
-		defs = append(defs, defSpawn())
 	}
 	if r.Cron != nil {
 		defs = append(defs, defCron())
@@ -207,36 +197,6 @@ func (r *Registry) Execute(ctx context.Context, tctx Context, name string, args 
 			return "", err
 		}
 		return r.webSearch(ctx, a.Query, a.Count)
-	case "message":
-		var a struct {
-			Content string `json:"content"`
-			Channel string `json:"channel"`
-			ChatID  string `json:"chat_id"`
-		}
-		if err := json.Unmarshal(args, &a); err != nil {
-			return "", err
-		}
-		ch := strings.TrimSpace(a.Channel)
-		cid := strings.TrimSpace(a.ChatID)
-		if ch == "" || cid == "" {
-			return "", errors.New("message requires explicit channel and chat_id")
-		}
-		// Avoid duplicate sends to the active conversation; reply with normal assistant text instead.
-		if strings.TrimSpace(tctx.Channel) != "" && strings.TrimSpace(tctx.ChatID) != "" {
-			if ch == strings.TrimSpace(tctx.Channel) && cid == strings.TrimSpace(tctx.ChatID) {
-				return "", errors.New("message to current session is not allowed; respond with assistant text instead")
-			}
-		}
-		return r.message(ctx, ch, cid, a.Content)
-	case "spawn":
-		var a struct {
-			Task  string `json:"task"`
-			Label string `json:"label"`
-		}
-		if err := json.Unmarshal(args, &a); err != nil {
-			return "", err
-		}
-		return r.spawn(ctx, a.Task, a.Label, tctx.Channel, tctx.ChatID)
 	case "cron":
 		var a struct {
 			Action       string `json:"action"`

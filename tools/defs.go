@@ -194,43 +194,6 @@ func defWebSearch() llm.ToolDefinition {
 	}
 }
 
-func defMessage() llm.ToolDefinition {
-	return llm.ToolDefinition{
-		Type: "function",
-		Function: llm.FunctionDefinition{
-			Name:        "message",
-			Description: "Send a message to a specific channel/chat_id. Do not use for replying to the current conversation.",
-			Parameters: llm.JSONSchema{
-				Type: "object",
-				Properties: map[string]llm.JSONSchema{
-					"content": {Type: "string"},
-					"channel": {Type: "string"},
-					"chat_id": {Type: "string"},
-				},
-				Required: []string{"content", "channel", "chat_id"},
-			},
-		},
-	}
-}
-
-func defSpawn() llm.ToolDefinition {
-	return llm.ToolDefinition{
-		Type: "function",
-		Function: llm.FunctionDefinition{
-			Name:        "spawn",
-			Description: "Spawn a subagent to handle a task in the background and report back.",
-			Parameters: llm.JSONSchema{
-				Type: "object",
-				Properties: map[string]llm.JSONSchema{
-					"task":  {Type: "string"},
-					"label": {Type: "string"},
-				},
-				Required: []string{"task"},
-			},
-		},
-	}
-}
-
 func defCron() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Type: "function",

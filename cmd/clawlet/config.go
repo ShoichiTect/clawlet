@@ -148,16 +148,31 @@ func splitCSV(v string) []string {
 	return out
 }
 
-func resolveWorkspace(flagValue string) (string, error) {
-	ws := strings.TrimSpace(flagValue)
-	if ws == "" {
-		if v := strings.TrimSpace(os.Getenv("CLAWLET_WORKSPACE")); v != "" {
-			ws = v
-		} else {
-			ws = paths.WorkspaceDir()
+func resolveDir(dirFlag string) (wsAbs string, sessionsDir string, err error) {
+	dir := strings.TrimSpace(dirFlag)
+	if dir == "" {
+		wsAbs, err = filepath.Abs(paths.WorkspaceDir())
+		if err != nil {
+			return "", "", err
 		}
+		return wsAbs, paths.SessionsDir(), nil
 	}
-	return filepath.Abs(ws)
+	wsAbs, err = filepath.Abs(dir)
+	if err != nil {
+		return "", "", err
+	}
+	return wsAbs, filepath.Join(wsAbs, ".clawlet", "sessions"), nil
+}
+
+func resolveCronStorePath(workspace, cfgValue string) string {
+	p := strings.TrimSpace(cfgValue)
+	if p == "" {
+		p = filepath.Join(".clawlet", "cron.json")
+	}
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(workspace, p)
 }
 
 func providerNeedsAPIKey(provider string) bool {

@@ -20,7 +20,6 @@ func main() {
 			cmdAgent(),
 			cmdGateway(),
 			cmdProvider(),
-			cmdChannels(),
 			cmdCron(),
 		},
 	}

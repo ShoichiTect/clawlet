@@ -2,33 +2,29 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mosaxiv/clawlet/agent"
-	"github.com/mosaxiv/clawlet/bus"
-	"github.com/mosaxiv/clawlet/channels"
-	"github.com/mosaxiv/clawlet/channels/discord"
-	"github.com/mosaxiv/clawlet/channels/slack"
-	"github.com/mosaxiv/clawlet/channels/telegram"
-	"github.com/mosaxiv/clawlet/channels/whatsapp"
-	"github.com/mosaxiv/clawlet/config"
 	"github.com/mosaxiv/clawlet/cron"
 	"github.com/mosaxiv/clawlet/heartbeat"
-	"github.com/mosaxiv/clawlet/paths"
-	"github.com/mosaxiv/clawlet/session"
 	"github.com/urfave/cli/v3"
 )
 
 func cmdGateway() *cli.Command {
 	return &cli.Command{
 		Name:  "gateway",
-		Usage: "run the long-lived agent gateway (channels + cron + heartbeat)",
+		Usage: "run the long-lived agent gateway (Unix socket HTTP + cron + heartbeat)",
 		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "workspace", Usage: "workspace directory (default: ~/.clawlet/workspace or CLAWLET_WORKSPACE)"},
+			&cli.StringFlag{Name: "dir", Usage: "project directory (default: ~/.clawlet/workspace)"},
 			&cli.IntFlag{Name: "max-iters", Value: 20, Usage: "max tool-call iterations"},
 			&cli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "verbose"},
 		},
@@ -37,60 +33,57 @@ func cmdGateway() *cli.Command {
 			if err != nil {
 				return err
 			}
-			if err := validateGatewayBindPolicy(cfg.Gateway); err != nil {
+
+			dirFlag := strings.TrimSpace(cmd.String("dir"))
+			wsAbs, sessionsDir, err := resolveDir(dirFlag)
+			if err != nil {
 				return err
 			}
-
-			wsAbs, err := resolveWorkspace(cmd.String("workspace"))
-			if err != nil {
+			defaultSessionKey := "gateway:default"
+			if dirFlag != "" {
+				defaultSessionKey = "default"
+			}
+			if err := os.MkdirAll(filepath.Join(wsAbs, ".clawlet"), 0o700); err != nil {
+				return err
+			}
+			if err := os.MkdirAll(sessionsDir, 0o700); err != nil {
 				return err
 			}
 
 			ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
 			defer stop()
 
-			b := bus.New(256)
-			smgr := session.NewManager(paths.SessionsDir())
-
+			var loop *agent.Loop
+			cronStore := resolveCronStorePath(wsAbs, cfg.Cron.StorePath)
 			var cronSvc *cron.Service
 			if cfg.Cron.EnabledValue() {
-				cronSvc = cron.NewService(paths.CronStorePath(), func(ctx context.Context, job cron.Job) (string, error) {
+				cronSvc = cron.NewService(cronStore, func(ctx context.Context, job cron.Job) (string, error) {
 					if job.Payload.Kind != "" && job.Payload.Kind != "agent_turn" {
 						return "", nil
 					}
-					ch := job.Payload.Channel
-					to := job.Payload.To
-					if !job.Payload.Deliver || strings.TrimSpace(ch) == "" || strings.TrimSpace(to) == "" {
-						return "", nil
+					if loop == nil {
+						return "", fmt.Errorf("gateway loop is not ready")
 					}
-					_ = b.PublishInbound(ctx, bus.InboundMessage{
-						Channel:    ch,
-						SenderID:   "cron:" + job.ID,
-						ChatID:     to,
-						Content:    job.Payload.Message,
-						SessionKey: ch + ":" + to,
-					})
-					return "", nil
+					sessionKey := strings.TrimSpace(job.Payload.SessionKey)
+					if sessionKey == "" {
+						sessionKey = defaultSessionKey
+					}
+					return loop.ProcessDirect(ctx, job.Payload.Message, sessionKey, "cron", job.ID)
 				})
 			}
 
-			loop, err := agent.NewLoop(agent.LoopOptions{
+			loop, err = agent.NewLoop(agent.LoopOptions{
 				Config:       cfg,
 				WorkspaceDir: wsAbs,
+				SessionDir:   sessionsDir,
 				Model:        cfg.LLM.Model,
 				MaxIters:     cmd.Int("max-iters"),
-				Bus:          b,
-				Sessions:     smgr,
 				Cron:         cronSvc,
-				Spawn:        nil,
 				Verbose:      cmd.Bool("verbose"),
 			})
 			if err != nil {
 				return err
 			}
-
-			sa := agent.NewSubagentManager(loop)
-			loop.SetSpawn(sa.Spawn)
 
 			if cronSvc != nil {
 				if err := cronSvc.Start(ctx); err != nil {
@@ -102,98 +95,93 @@ func cmdGateway() *cli.Command {
 				Enabled:     cfg.Heartbeat.EnabledValue(),
 				IntervalSec: cfg.Heartbeat.IntervalSec,
 				OnHeartbeat: func(ctx context.Context, prompt string) (string, error) {
-					return loop.ProcessDirect(ctx, prompt, "heartbeat", "cli", "heartbeat")
+					return loop.ProcessDirect(ctx, prompt, "heartbeat", "heartbeat", "default")
 				},
 			})
 			hb.Start(ctx)
-
-			cm := channels.NewManager(b)
-			if cfg.Channels.Discord.Enabled {
-				cm.Add(discord.New(cfg.Channels.Discord, b))
-			}
-			var sl *slack.Channel
-			if cfg.Channels.Slack.Enabled {
-				if strings.TrimSpace(cfg.Channels.Slack.BotToken) == "" {
-					return fmt.Errorf("slack enabled but botToken is empty")
-				}
-				if strings.TrimSpace(cfg.Channels.Slack.AppToken) == "" {
-					return fmt.Errorf("slack enabled but appToken is empty")
-				}
-				sl = slack.New(cfg.Channels.Slack, b)
-				cm.Add(sl)
-			}
-			if cfg.Channels.Telegram.Enabled {
-				if strings.TrimSpace(cfg.Channels.Telegram.Token) == "" {
-					return fmt.Errorf("telegram enabled but token is empty")
-				}
-				cm.Add(telegram.New(cfg.Channels.Telegram, b))
-			}
-			if cfg.Channels.WhatsApp.Enabled {
-				linked, err := whatsapp.IsLinked(ctx, cfg.Channels.WhatsApp)
-				if err != nil {
-					return fmt.Errorf("whatsapp link check failed: %w", err)
-				}
-				if !linked {
-					return fmt.Errorf("whatsapp is not linked; run: clawlet channels login --channel whatsapp")
-				}
-				cm.Add(whatsapp.New(cfg.Channels.WhatsApp, b))
+			defer hb.Stop()
+			if cronSvc != nil {
+				defer cronSvc.Stop()
 			}
 
-			if err := cm.StartAll(ctx); err != nil {
+			sockPath := filepath.Join(wsAbs, ".clawlet", "gateway.sock")
+			if err := os.Remove(sockPath); err != nil && !os.IsNotExist(err) {
 				return err
 			}
-
-			go func() { _ = loop.Run(ctx) }()
-
-			fmt.Printf("gateway running\n- workspace: %s\n- sessions: %s\n", wsAbs, paths.SessionsDir())
-			fmt.Println("stop: Ctrl+C")
-			<-ctx.Done()
-
-			_ = cm.StopAll()
-			if cronSvc != nil {
-				cronSvc.Stop()
+			ln, err := net.Listen("unix", sockPath)
+			if err != nil {
+				return err
 			}
-			hb.Stop()
-			return nil
+			defer func() { _ = os.Remove(sockPath) }()
+
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"status":    "ok",
+					"workspace": wsAbs,
+					"pid":       os.Getpid(),
+				})
+			})
+			mux.HandleFunc("POST /api/chat", func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Message    string `json:"message"`
+					SessionKey string `json:"session_key"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON: " + err.Error()})
+					return
+				}
+				if strings.TrimSpace(req.Message) == "" {
+					writeJSON(w, http.StatusBadRequest, map[string]any{"error": "message is required"})
+					return
+				}
+				sessionKey := strings.TrimSpace(req.SessionKey)
+				if sessionKey == "" {
+					sessionKey = defaultSessionKey
+				}
+				turnCtx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+				defer cancel()
+				out, err := loop.ProcessTurn(turnCtx, req.Message, sessionKey, "tui", "default")
+				if err != nil {
+					writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{
+					"content":    out.Final,
+					"tools_used": out.ToolsUsed,
+				})
+			})
+
+			srv := &http.Server{Handler: mux}
+			serveErr := make(chan error, 1)
+			go func() {
+				serveErr <- srv.Serve(ln)
+			}()
+
+			fmt.Printf("gateway running\n- workspace: %s\n- sessions: %s\n- socket: %s\n", wsAbs, sessionsDir, sockPath)
+			fmt.Println("stop: Ctrl+C")
+
+			select {
+			case <-ctx.Done():
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = srv.Shutdown(shutdownCtx)
+				if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
+					return err
+				}
+				return nil
+			case err := <-serveErr:
+				if errors.Is(err, http.ErrServerClosed) {
+					return nil
+				}
+				return err
+			}
 		},
 	}
 }
 
-func validateGatewayBindPolicy(cfg config.GatewayConfig) error {
-	listen := strings.TrimSpace(cfg.Listen)
-	if listen == "" {
-		return nil
-	}
-	host := gatewayListenHost(listen)
-	if isLocalGatewayHost(host) || cfg.AllowPublicBind {
-		return nil
-	}
-	return fmt.Errorf(
-		"refusing public gateway bind on %q; use localhost bind, or set gateway.allowPublicBind=true only when protected by a trusted tunnel/proxy",
-		listen,
-	)
-}
-
-func gatewayListenHost(listen string) string {
-	if strings.HasPrefix(listen, ":") {
-		return ""
-	}
-	if host, _, err := net.SplitHostPort(listen); err == nil {
-		return host
-	}
-	return listen
-}
-
-func isLocalGatewayHost(host string) bool {
-	host = strings.TrimSpace(host)
-	host = strings.TrimPrefix(host, "[")
-	host = strings.TrimSuffix(host, "]")
-	switch strings.ToLower(host) {
-	case "localhost", "127.0.0.1", "::1", "0:0:0:0:0:0:0:1":
-		return true
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		return ip.IsLoopback()
-	}
-	return false
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
 }

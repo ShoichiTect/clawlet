@@ -30,9 +30,23 @@ clawlet onboard \
 # Check effective configuration
 clawlet status
 
-# Chat
+# Chat (global default workspace)
 clawlet agent -m "What is 2+2?"
+
+# Chat in a project-scoped workspace/session
+clawlet agent --dir ./my-project -m "Summarize this repo"
 ```
+
+## Project scope and sessions
+
+`--dir` is the project boundary. With `--dir`, workspace state is stored in that project and the default session key is `default`:
+
+- workspace: `{dir}`
+- sessions: `{dir}/.clawlet/sessions/`
+- gateway socket: `{dir}/.clawlet/gateway.sock`
+- memory: `{dir}/memory/`
+
+Without `--dir`, clawlet uses `~/.clawlet/workspace` and `~/.clawlet/sessions`.
 
 ## Configuration (`~/.clawlet/config.json`)
 
@@ -160,14 +174,14 @@ When disabled (default):
 
 ### Secure Defaults
 - `tools.restrictToWorkspace` defaults to `true` (tools can only access files inside the workspace directory)
-- `gateway.listen` defaults to `127.0.0.1:18790`
-- `gateway.allowPublicBind` defaults to `false`
+- `clawlet gateway` listens on a Unix domain socket at `{dir}/.clawlet/gateway.sock` (or `~/.clawlet/workspace/.clawlet/gateway.sock` without `--dir`)
+- Gateway no longer binds a TCP port or exposes external chat integrations.
 
 ### Security Checklist
 
 | Item | Status | Details |
 | --- | --- | --- |
-| Gateway not publicly exposed | ✅ | Default bind is localhost only. Public bind is rejected unless `gateway.allowPublicBind=true` is explicitly set. |
+| Gateway not publicly exposed | ✅ | Gateway uses a local Unix domain socket instead of a TCP listener. |
 | Filesystem scoped (no `/`) | ✅ | File tools block root path, path traversal, encoded traversal, symlink escapes, and sensitive state paths. |
 | Exec tool dangerous-command guard | ✅ | `exec` blocks unsafe shell constructs (command chaining, unsafe expansions, redirection/`tee`, dangerous patterns), blocks sensitive paths, and passes only allowlisted environment variables to subprocesses. |
 
@@ -175,7 +189,7 @@ When disabled (default):
 
 ### Multimodal input (audio/image/attachments)
 
-Inbound channel messages can include attachments. clawlet can:
+Internal inbound messages can include attachments. clawlet can:
 
 - send images to vision-capable models,
 - transcribe audio using the configured provider,
@@ -201,162 +215,35 @@ Configure under `tools.media` (the values below are the current default values):
 }
 ```
 
-## Chat Apps
+## Gateway (TUI / internal clients)
 
-Chat app integrations are configured under `channels` (examples below).
-
-<details>
-<summary><b>Telegram</b></summary>
-
-Uses **Telegram Bot API long polling** (`getUpdates`) so no public webhook endpoint is required.
-
-1. Create a bot with `@BotFather` and copy the bot token.
-2. (Optional but recommended) Restrict access with `allowFrom`.
-   - Telegram numeric user ID works best.
-   - Username is also supported (without `@`).
-
-Example config (merge into `~/.clawlet/config.json`):
-
-```json
-{
-  "channels": {
-    "telegram": {
-      "enabled": true,
-      "token": "123456:ABCDEF...",
-      "allowFrom": ["123456789"]
-    }
-  }
-}
-```
-
-Then run:
+External chat integrations (Discord / Slack / Telegram / WhatsApp) have been removed.
+`clawlet gateway` now accepts only internal HTTP requests over a Unix domain socket.
 
 ```bash
+# Project-scoped gateway
+clawlet gateway --dir ./my-project
+
+# Global default workspace
 clawlet gateway
 ```
 
-</details>
+Socket path:
 
-<details>
-<summary><b>WhatsApp</b></summary>
+- with `--dir`: `{dir}/.clawlet/gateway.sock`
+- without `--dir`: `~/.clawlet/workspace/.clawlet/gateway.sock`
 
-Uses **WhatsApp Web Multi-Device**. No Meta webhook/public endpoint is required.
+HTTP endpoints over the Unix socket:
 
-1. Enable channel and (recommended) set `allowFrom`.
-2. Run login once:
-   - `clawlet channels login --channel whatsapp`
-   - Scan the QR shown in terminal from WhatsApp `Linked devices`.
-3. Start normal runtime with `clawlet gateway`.
+```http
+GET /api/health
+POST /api/chat
+Content-Type: application/json
 
-Example config (merge into `~/.clawlet/config.json`):
-
-```json
-{
-  "channels": {
-    "whatsapp": {
-      "enabled": true,
-      "allowFrom": ["15551234567"]
-    }
-  }
-}
+{"message":"hello","session_key":"default"}
 ```
 
-Then run:
-
-```bash
-# one-time login (required before gateway)
-clawlet channels login --channel whatsapp
-
-# normal runtime
-clawlet gateway
-```
-
-Notes:
-- Send retries are applied for transient/rate-limit errors with exponential backoff.
-- Session state is persisted by default at `~/.clawlet/whatsapp-auth/session.db`.
-- You can override store path with `sessionStorePath` if needed.
-- `clawlet gateway` does not perform QR login; if not linked, it exits with a login command hint.
-
-</details>
-
-<details>
-<summary><b>Discord</b></summary>
-
-1. Create the bot and copy the token
-Go to https://discord.com/developers/applications, create an application, then `Bot` → `Add Bot`. Copy the bot token.
-
-2. Invite the bot to your server (OAuth2 URL Generator)
-In `OAuth2` → `URL Generator`, choose `Scopes: bot`. For `Bot Permissions`, the minimal set is `View Channels`, `Send Messages`, `Read Message History`. Open the generated URL and add the bot to your server.
-
-3. Enable Message Content Intent (required for guild message text)
-In the Developer Portal bot settings, enable **MESSAGE CONTENT INTENT**. Without it, the bot won't receive message text in servers.
-
-4. Get your User ID (for allowFrom)
-Enable Developer Mode in Discord settings, then right-click your profile and select `Copy User ID`.
-
-5. Configure clawlet
-`channels.discord.allowFrom` is the list of user IDs allowed to talk to the agent (empty = allow everyone).
-
-Example config (merge into `~/.clawlet/config.json`):
-
-```json
-{
-  "channels": {
-    "discord": {
-      "enabled": true,
-      "token": "YOUR_BOT_TOKEN",
-      "allowFrom": ["YOUR_USER_ID"]
-    }
-  }
-}
-```
-
-6. Run
-
-```bash
-clawlet gateway
-```
-
-</details>
-
-<details>
-<summary><b>Slack</b></summary>
-
-Uses **Socket Mode** (no public URL required). clawlet currently supports Socket Mode only.
-
-1. Create a Slack app
-2. Configure the app:
-   - Socket Mode: ON, generate an App-Level Token (`xapp-...`) with `connections:write`
-   - OAuth scopes (bot): `chat:write`, `reactions:write`, `app_mentions:read`, `im:history`, `channels:history`
-   - Event Subscriptions: subscribe to `message.im`, `message.channels`, `app_mention`
-3. Install the app to your workspace and copy the Bot Token (`xoxb-...`)
-4. Set `channels.slack.enabled=true`, and configure `botToken` + `appToken`.
-   - groupPolicy: "mention" (default — respond only when @mentioned), "open" (respond to all channel messages), or "allowlist" (restrict to specific channels).
-   - DM policy defaults to open. Set "dm": {"enabled": false} to disable DMs.
-
-Example config (merge into `~/.clawlet/config.json`):
-
-```json
-{
-  "channels": {
-    "slack": {
-      "enabled": true,
-      "botToken": "xoxb-...",
-      "appToken": "xapp-...",
-      "groupPolicy": "mention",
-      "allowFrom": ["U012345"]
-    }
-  }
-}
-```
-
-Then run:
-
-```bash
-clawlet gateway
-```
-
-</details>
+`session_key` is optional. With `--dir`, the default is `default` and is shared with `clawlet agent --dir ...`. Without `--dir`, gateway defaults to `gateway:default` and CLI defaults to `cli:default`.
 
 ## CLI Reference
 
@@ -365,8 +252,7 @@ clawlet gateway
 | `clawlet onboard` | Initialize a workspace and write a minimal config. |
 | `clawlet status` | Print the effective configuration (after defaults and routing). |
 | `clawlet agent` | Run the agent in CLI mode (interactive or single message). |
-| `clawlet gateway` | Run the long-lived gateway (channels + cron + heartbeat). |
-| `clawlet channels status` | Show which chat channels are enabled/configured. |
+| `clawlet gateway [--dir DIR]` | Run the long-lived Unix-socket gateway (internal TUI/API + cron + heartbeat). |
 | `clawlet cron list` | List scheduled jobs. |
 | `clawlet cron add` | Add a scheduled job. |
 | `clawlet cron remove` | Remove a scheduled job. |
@@ -387,8 +273,8 @@ clawlet cron add --message "daily standup notes" --cron "0 9 * * 1-5"
 # Run once at a specific time (RFC3339)
 clawlet cron add --message "remind me" --at "2026-02-10T09:00:00Z"
 
-# Deliver to a chat (requires both --channel and --to)
-clawlet cron add --message "ping" --every 600 --channel slack --to U012345
+# Use a project and explicit session key
+clawlet cron add --dir ./my-project --session default --message "ping" --every 600
 ```
 ## 🐳 Docker
 

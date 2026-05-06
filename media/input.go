@@ -16,17 +16,45 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/mosaxiv/clawlet/bus"
 	"github.com/mosaxiv/clawlet/config"
 	"github.com/mosaxiv/clawlet/llm"
 )
+
+type Attachment struct {
+	Name      string            `json:"name,omitempty"`
+	MIMEType  string            `json:"mime_type,omitempty"`
+	Kind      string            `json:"kind,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	LocalPath string            `json:"local_path,omitempty"`
+	Data      []byte            `json:"-"`
+	Headers   map[string]string `json:"headers,omitempty"`
+}
+
+type InboundMessage struct {
+	Content     string       `json:"content"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+func InferAttachmentKind(mimeType string) string {
+	mt := strings.ToLower(strings.TrimSpace(mimeType))
+	switch {
+	case strings.HasPrefix(mt, "image/"):
+		return "image"
+	case strings.HasPrefix(mt, "audio/"):
+		return "audio"
+	case strings.HasPrefix(mt, "video/"):
+		return "video"
+	default:
+		return "file"
+	}
+}
 
 type PreparedInbound struct {
 	UserMessage llm.Message
 	SessionText string
 }
 
-func PrepareInbound(ctx context.Context, client *llm.Client, cfg config.MediaToolsConfig, inbound bus.InboundMessage) (PreparedInbound, error) {
+func PrepareInbound(ctx context.Context, client *llm.Client, cfg config.MediaToolsConfig, inbound InboundMessage) (PreparedInbound, error) {
 	baseText := strings.TrimSpace(inbound.Content)
 	prepared := PreparedInbound{
 		UserMessage: llm.Message{Role: "user", Content: baseText},
@@ -145,14 +173,14 @@ func PrepareInbound(ctx context.Context, client *llm.Client, cfg config.MediaToo
 	return prepared, nil
 }
 
-func normalizeAttachment(att bus.Attachment, index int) bus.Attachment {
+func normalizeAttachment(att Attachment, index int) Attachment {
 	att.Name = strings.TrimSpace(att.Name)
 	att.MIMEType = strings.TrimSpace(att.MIMEType)
 	att.URL = strings.TrimSpace(att.URL)
 	att.LocalPath = strings.TrimSpace(att.LocalPath)
 	att.Kind = strings.TrimSpace(att.Kind)
 	if att.Kind == "" {
-		att.Kind = bus.InferAttachmentKind(att.MIMEType)
+		att.Kind = InferAttachmentKind(att.MIMEType)
 	}
 	if att.Name == "" {
 		if att.LocalPath != "" {
@@ -171,7 +199,7 @@ func normalizeAttachment(att bus.Attachment, index int) bus.Attachment {
 	return att
 }
 
-func buildAttachmentSection(ctx context.Context, att bus.Attachment, cfg config.MediaToolsConfig) string {
+func buildAttachmentSection(ctx context.Context, att Attachment, cfg config.MediaToolsConfig) string {
 	header := fmt.Sprintf("[Attachment] %s", att.Name)
 	if strings.TrimSpace(att.MIMEType) != "" {
 		header += fmt.Sprintf(" (%s)", strings.TrimSpace(att.MIMEType))
@@ -192,7 +220,7 @@ func buildAttachmentSection(ctx context.Context, att bus.Attachment, cfg config.
 	return header + "\n" + text
 }
 
-func isTextCandidate(att bus.Attachment) bool {
+func isTextCandidate(att Attachment) bool {
 	mimeType := strings.ToLower(strings.TrimSpace(att.MIMEType))
 	if strings.HasPrefix(mimeType, "text/") {
 		return true
@@ -227,7 +255,7 @@ func extractText(data []byte, maxChars int) (string, bool) {
 	return strings.TrimSpace(text), true
 }
 
-func readAttachmentBytes(ctx context.Context, att bus.Attachment, maxBytes int64, timeoutSec int) ([]byte, string, error) {
+func readAttachmentBytes(ctx context.Context, att Attachment, maxBytes int64, timeoutSec int) ([]byte, string, error) {
 	if maxBytes <= 0 {
 		maxBytes = config.DefaultMediaMaxFileBytes
 	}

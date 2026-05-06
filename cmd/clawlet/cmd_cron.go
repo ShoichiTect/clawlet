@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/mosaxiv/clawlet/cron"
-	"github.com/mosaxiv/clawlet/paths"
 	"github.com/urfave/cli/v3"
 )
 
@@ -25,23 +24,39 @@ func cmdCron() *cli.Command {
 	}
 }
 
+func cronDirFlag() cli.Flag {
+	return &cli.StringFlag{Name: "dir", Usage: "project directory (default: ~/.clawlet/workspace)"}
+}
+
+func cronServiceForCmd(cmd *cli.Command) (*cron.Service, error) {
+	cfg, _, err := loadConfig()
+	if err != nil {
+		return nil, err
+	}
+	wsAbs, _, err := resolveDir(cmd.String("dir"))
+	if err != nil {
+		return nil, err
+	}
+	return cron.NewService(resolveCronStorePath(wsAbs, cfg.Cron.StorePath), nil), nil
+}
+
 func cronListCmd() *cli.Command {
 	return &cli.Command{
 		Name:  "list",
 		Usage: "list jobs",
+		Flags: []cli.Flag{cronDirFlag()},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			_, _, err := loadConfig()
+			svc, err := cronServiceForCmd(cmd)
 			if err != nil {
 				return err
 			}
-			svc := cron.NewService(paths.CronStorePath(), nil)
 			jobs := svc.List(true)
 			if len(jobs) == 0 {
 				fmt.Println("No jobs.")
 				return nil
 			}
 			for _, j := range jobs {
-				fmt.Printf("- %s id=%s enabled=%v kind=%s next=%d\n", j.Name, j.ID, j.Enabled, j.Schedule.Kind, j.State.NextRunAtMS)
+				fmt.Printf("- %s id=%s enabled=%v kind=%s session=%s next=%d\n", j.Name, j.ID, j.Enabled, j.Schedule.Kind, j.Payload.SessionKey, j.State.NextRunAtMS)
 			}
 			return nil
 		},
@@ -58,12 +73,12 @@ func cronAddCmd() *cli.Command {
 			&cli.IntFlag{Name: "every", Usage: "run every N seconds"},
 			&cli.StringFlag{Name: "cron", Usage: "cron expression (5-field)"},
 			&cli.StringFlag{Name: "at", Usage: "run once at time (RFC3339)"},
-			&cli.BoolFlag{Name: "deliver", Value: true, Usage: "deliver response to a channel"},
-			&cli.StringFlag{Name: "channel", Usage: "delivery channel (e.g. discord, slack)"},
-			&cli.StringFlag{Name: "to", Usage: "delivery chat/user id"},
+			&cli.StringFlag{Name: "session", Aliases: []string{"s"}, Usage: "session key for the agent turn"},
+			cronDirFlag(),
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			_, _, err := loadConfig()
+			dirFlag := strings.TrimSpace(cmd.String("dir"))
+			svc, err := cronServiceForCmd(cmd)
 			if err != nil {
 				return err
 			}
@@ -109,21 +124,21 @@ func cronAddCmd() *cli.Command {
 				sched = cron.Schedule{Kind: "at", AtMS: t.UnixMilli()}
 			}
 
-			channel := strings.TrimSpace(cmd.String("channel"))
-			to := strings.TrimSpace(cmd.String("to"))
-			if (channel == "") != (to == "") {
-				return cli.Exit("--channel and --to must be provided together", 2)
+			sessionKey := strings.TrimSpace(cmd.String("session"))
+			if sessionKey == "" {
+				if dirFlag == "" {
+					sessionKey = "gateway:default"
+				} else {
+					sessionKey = "default"
+				}
 			}
 
 			payload := cron.Payload{
-				Kind:    "agent_turn",
-				Message: message,
-				Deliver: cmd.Bool("deliver"),
-				Channel: channel,
-				To:      to,
+				Kind:       "agent_turn",
+				Message:    message,
+				SessionKey: sessionKey,
 			}
 
-			svc := cron.NewService(paths.CronStorePath(), nil)
 			j, err := svc.Add(jname, sched, payload)
 			if err != nil {
 				return err
@@ -139,8 +154,9 @@ func cronRemoveCmd() *cli.Command {
 		Name:      "remove",
 		Usage:     "remove a job",
 		ArgsUsage: "<job_id>",
+		Flags:     []cli.Flag{cronDirFlag()},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			_, _, err := loadConfig()
+			svc, err := cronServiceForCmd(cmd)
 			if err != nil {
 				return err
 			}
@@ -148,7 +164,6 @@ func cronRemoveCmd() *cli.Command {
 				return cli.Exit("usage: clawlet cron remove <job_id>", 2)
 			}
 			id := cmd.Args().Get(0)
-			svc := cron.NewService(paths.CronStorePath(), nil)
 			if svc.Remove(id) {
 				fmt.Println("Removed:", id)
 			} else {
@@ -166,9 +181,10 @@ func cronToggleCmd() *cli.Command {
 		ArgsUsage: "<job_id>",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "disable", Usage: "disable instead of enable"},
+			cronDirFlag(),
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			_, _, err := loadConfig()
+			svc, err := cronServiceForCmd(cmd)
 			if err != nil {
 				return err
 			}
@@ -176,7 +192,6 @@ func cronToggleCmd() *cli.Command {
 				return cli.Exit("usage: clawlet cron toggle [--disable] <job_id>", 2)
 			}
 			id := cmd.Args().Get(0)
-			svc := cron.NewService(paths.CronStorePath(), nil)
 			if svc.Toggle(id, cmd.Bool("disable")) {
 				if cmd.Bool("disable") {
 					fmt.Println("Disabled:", id)
@@ -198,9 +213,10 @@ func cronRunCmd() *cli.Command {
 		ArgsUsage: "<job_id>",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "force", Usage: "run even if disabled"},
+			cronDirFlag(),
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			_, _, err := loadConfig()
+			svc, err := cronServiceForCmd(cmd)
 			if err != nil {
 				return err
 			}
@@ -208,7 +224,6 @@ func cronRunCmd() *cli.Command {
 				return cli.Exit("usage: clawlet cron run [--force] <job_id>", 2)
 			}
 			id := cmd.Args().Get(0)
-			svc := cron.NewService(paths.CronStorePath(), nil)
 			_, err = svc.RunNow(ctx, id, cmd.Bool("force"))
 			if err != nil {
 				return err

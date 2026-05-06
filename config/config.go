@@ -17,9 +17,6 @@ type Config struct {
 	Tools     ToolsConfig     `json:"tools"`
 	Cron      CronConfig      `json:"cron"`
 	Heartbeat HeartbeatConfig `json:"heartbeat"`
-	Gateway   GatewayConfig   `json:"gateway"`
-	// Channels are optional; enable what you need.
-	Channels ChannelsConfig `json:"channels"`
 }
 
 type LLMConfig struct {
@@ -239,7 +236,8 @@ func (c MediaToolsConfig) AttachmentEnabledValue() bool {
 }
 
 type CronConfig struct {
-	Enabled *bool `json:"enabled"`
+	Enabled   *bool  `json:"enabled"`
+	StorePath string `json:"storePath,omitempty"`
 }
 
 func (c CronConfig) EnabledValue() bool {
@@ -259,65 +257,6 @@ func (c HeartbeatConfig) EnabledValue() bool {
 		return true
 	}
 	return *c.Enabled
-}
-
-type GatewayConfig struct {
-	// Listen address for HTTP endpoints needed by channels (reserved for future use).
-	// Default: "127.0.0.1:18790"
-	Listen string `json:"listen"`
-	// Allow binding gateway to non-localhost addresses.
-	// Keep false unless you intentionally expose it behind a trusted tunnel/proxy.
-	AllowPublicBind bool `json:"allowPublicBind,omitempty"`
-}
-
-type ChannelsConfig struct {
-	Discord  DiscordConfig  `json:"discord"`
-	Slack    SlackConfig    `json:"slack"`
-	Telegram TelegramConfig `json:"telegram"`
-	WhatsApp WhatsAppConfig `json:"whatsapp"`
-}
-
-type DiscordConfig struct {
-	Enabled    bool     `json:"enabled"`
-	Token      string   `json:"token"`
-	AllowFrom  []string `json:"allowFrom"`
-	GatewayURL string   `json:"gatewayURL,omitempty"`
-	Intents    int      `json:"intents,omitempty"`
-}
-
-// Slack (Socket Mode).
-// Inbound via Socket Mode, outbound via Web API (chat.postMessage).
-type SlackConfig struct {
-	Enabled   bool     `json:"enabled"`
-	AllowFrom []string `json:"allowFrom"`
-	BotToken  string   `json:"botToken"` // xoxb-...
-	AppToken  string   `json:"appToken"` // xapp-... (Socket Mode)
-	// GroupPolicy controls whether the bot responds to non-DM messages.
-	// Supported: "mention" (default), "open", "allowlist".
-	GroupPolicy    string         `json:"groupPolicy,omitempty"`
-	GroupAllowFrom []string       `json:"groupAllowFrom,omitempty"` // channel IDs allowed when groupPolicy="allowlist"
-	DM             *SlackDMConfig `json:"dm,omitempty"`
-}
-
-type SlackDMConfig struct {
-	Enabled bool `json:"enabled"`
-}
-
-// Telegram (Bot API via long polling).
-type TelegramConfig struct {
-	Enabled        bool     `json:"enabled"`
-	Token          string   `json:"token"`
-	AllowFrom      []string `json:"allowFrom"`
-	BaseURL        string   `json:"baseURL,omitempty"` // optional: custom Bot API server URL
-	PollTimeoutSec int      `json:"pollTimeoutSec,omitempty"`
-	Workers        int      `json:"workers,omitempty"`
-}
-
-// WhatsApp (whatsmeow / WhatsApp Web Multi-Device).
-type WhatsAppConfig struct {
-	Enabled          bool     `json:"enabled"`
-	AllowFrom        []string `json:"allowFrom"`
-	SessionStorePath string   `json:"sessionStorePath,omitempty"` // optional: sqlite store path for persistent login
 }
 
 const (
@@ -459,44 +398,12 @@ func Default() *Config {
 			},
 		},
 		Cron: CronConfig{
-			Enabled: &cronEnabled,
+			Enabled:   &cronEnabled,
+			StorePath: filepath.Join(".clawlet", "cron.json"),
 		},
 		Heartbeat: HeartbeatConfig{
 			Enabled:     &hbEnabled,
 			IntervalSec: 30 * 60,
-		},
-		Gateway: GatewayConfig{
-			Listen:          "127.0.0.1:18790",
-			AllowPublicBind: false,
-		},
-		Channels: ChannelsConfig{
-			Discord: DiscordConfig{
-				Enabled:    false,
-				Token:      "",
-				AllowFrom:  nil,
-				GatewayURL: "wss://gateway.discord.gg/?v=10&encoding=json",
-				Intents:    37377, // GUILDS (1<<0) + GUILD_MESSAGES (1<<9) + DIRECT_MESSAGES (1<<12) + MESSAGE_CONTENT (1<<15)
-			},
-			Slack: SlackConfig{
-				Enabled:        false,
-				AllowFrom:      nil,
-				BotToken:       "",
-				AppToken:       "",
-				GroupPolicy:    "mention",
-				GroupAllowFrom: nil,
-				DM:             &SlackDMConfig{Enabled: true},
-			},
-			Telegram: TelegramConfig{
-				Enabled:   false,
-				Token:     "",
-				AllowFrom: nil,
-				BaseURL:   "https://api.telegram.org",
-				Workers:   2,
-			},
-			WhatsApp: WhatsAppConfig{
-				Enabled:   false,
-				AllowFrom: nil,
-			},
 		},
 	}
 }
@@ -607,6 +514,10 @@ func Load(path string) (*Config, error) {
 		v := true
 		cfg.Cron.Enabled = &v
 	}
+	cfg.Cron.StorePath = strings.TrimSpace(cfg.Cron.StorePath)
+	if cfg.Cron.StorePath == "" {
+		cfg.Cron.StorePath = filepath.Join(".clawlet", "cron.json")
+	}
 	if cfg.Heartbeat.IntervalSec <= 0 {
 		cfg.Heartbeat.IntervalSec = 30 * 60
 	}
@@ -614,10 +525,6 @@ func Load(path string) (*Config, error) {
 		// Default to enabled when missing from config.
 		v := true
 		cfg.Heartbeat.Enabled = &v
-	}
-	cfg.Gateway.Listen = strings.TrimSpace(cfg.Gateway.Listen)
-	if cfg.Gateway.Listen == "" {
-		cfg.Gateway.Listen = "127.0.0.1:18790"
 	}
 	if cfg.Agents.Defaults.MemorySearch.Enabled == nil {
 		v := false
@@ -674,30 +581,6 @@ func Load(path string) (*Config, error) {
 		v := true
 		cfg.Agents.Defaults.MemorySearch.Sync.OnSearch = &v
 	}
-	if cfg.Channels.Discord.GatewayURL == "" {
-		cfg.Channels.Discord.GatewayURL = "wss://gateway.discord.gg/?v=10&encoding=json"
-	}
-	if cfg.Channels.Discord.Intents == 0 {
-		cfg.Channels.Discord.Intents = 37377
-	}
-	if strings.TrimSpace(cfg.Channels.Slack.GroupPolicy) == "" {
-		cfg.Channels.Slack.GroupPolicy = "mention"
-	}
-	// Default DM policy is open (enabled).
-	if cfg.Channels.Slack.DM == nil {
-		cfg.Channels.Slack.DM = &SlackDMConfig{Enabled: true}
-	}
-	if strings.TrimSpace(cfg.Channels.Telegram.BaseURL) == "" {
-		cfg.Channels.Telegram.BaseURL = "https://api.telegram.org"
-	}
-	if cfg.Channels.Telegram.PollTimeoutSec <= 0 {
-		cfg.Channels.Telegram.PollTimeoutSec = 25
-	}
-	if cfg.Channels.Telegram.Workers <= 0 {
-		cfg.Channels.Telegram.Workers = 2
-	}
-	cfg.Channels.WhatsApp.SessionStorePath = strings.TrimSpace(cfg.Channels.WhatsApp.SessionStorePath)
-
 	// Apply model routing to populate cfg.LLM for runtime use.
 	cfg.ApplyLLMRouting()
 	return &cfg, nil

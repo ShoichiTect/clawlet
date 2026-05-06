@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mosaxiv/clawlet/bus"
 	"github.com/mosaxiv/clawlet/config"
 	"github.com/mosaxiv/clawlet/llm"
 )
@@ -23,9 +22,9 @@ func TestPrepareInbound_ImagePart(t *testing.T) {
 	}
 
 	cfg := config.Default().Tools.Media
-	inbound := bus.InboundMessage{
+	inbound := InboundMessage{
 		Content: "describe",
-		Attachments: []bus.Attachment{{
+		Attachments: []Attachment{{
 			Name:      "img.png",
 			MIMEType:  "image/png",
 			Kind:      "image",
@@ -65,9 +64,9 @@ func TestPrepareInbound_AudioTranscription(t *testing.T) {
 	}
 
 	cfg := config.Default().Tools.Media
-	inbound := bus.InboundMessage{
+	inbound := InboundMessage{
 		Content: "",
-		Attachments: []bus.Attachment{{
+		Attachments: []Attachment{{
 			Name:      "voice.ogg",
 			MIMEType:  "audio/ogg",
 			Kind:      "audio",
@@ -102,9 +101,9 @@ func TestPrepareInbound_TextAttachment(t *testing.T) {
 	}
 
 	cfg := config.Default().Tools.Media
-	inbound := bus.InboundMessage{
+	inbound := InboundMessage{
 		Content: "check",
-		Attachments: []bus.Attachment{{
+		Attachments: []Attachment{{
 			Name:      "memo.txt",
 			MIMEType:  "text/plain",
 			Kind:      "file",
@@ -126,7 +125,7 @@ func TestPrepareInbound_TextAttachment(t *testing.T) {
 }
 
 func TestReadAttachmentBytes_BlockPrivateHost(t *testing.T) {
-	_, _, err := readAttachmentBytes(context.Background(), bus.Attachment{
+	_, _, err := readAttachmentBytes(context.Background(), Attachment{
 		URL:      "http://127.0.0.1/private.txt",
 		MIMEType: "text/plain",
 	}, 1024, 2)
@@ -139,7 +138,7 @@ func TestReadAttachmentBytes_BlockPrivateHost(t *testing.T) {
 }
 
 func TestReadAttachmentBytes_RejectAuthHeaderForUntrustedHost(t *testing.T) {
-	_, _, err := readAttachmentBytes(context.Background(), bus.Attachment{
+	_, _, err := readAttachmentBytes(context.Background(), Attachment{
 		URL:      "https://example.com/private.txt",
 		MIMEType: "text/plain",
 		Headers: map[string]string{

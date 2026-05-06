@@ -22,6 +22,7 @@ import (
 type Options struct {
 	Config       *config.Config
 	WorkspaceDir string
+	SessionDir   string
 	SessionKey   string
 	MaxIters     int
 	Verbose      bool
@@ -54,13 +55,22 @@ func New(opts Options) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(opts.SessionKey) == "" {
+		opts.SessionKey = "cli:default"
+	}
 	if opts.MaxIters <= 0 {
 		opts.MaxIters = 20
 	}
 	if err := paths.EnsureStateDirs(); err != nil {
 		return nil, err
 	}
-	sdir := paths.SessionsDir()
+	sdir := strings.TrimSpace(opts.SessionDir)
+	if sdir == "" {
+		sdir = paths.SessionsDir()
+	}
+	if err := os.MkdirAll(sdir, 0o700); err != nil {
+		return nil, err
+	}
 
 	sess, err := session.Load(sdir, opts.SessionKey)
 	if err != nil {

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mosaxiv/clawlet/agent"
 	"github.com/fatih/color"
+	"github.com/mosaxiv/clawlet/agent"
 	"github.com/urfave/cli/v3"
 )
 
@@ -20,8 +20,8 @@ func cmdAgent() *cli.Command {
 		Usage: "run an agent in CLI mode",
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "message", Aliases: []string{"m"}, Usage: "single message (non-interactive)"},
-			&cli.StringFlag{Name: "session", Aliases: []string{"s"}, Value: "cli:default", Usage: "session key"},
-			&cli.StringFlag{Name: "workspace", Usage: "workspace directory (default: ~/.clawlet/workspace or CLAWLET_WORKSPACE)"},
+			&cli.StringFlag{Name: "session", Aliases: []string{"s"}, Usage: "session key"},
+			&cli.StringFlag{Name: "dir", Usage: "project directory (default: ~/.clawlet/workspace)"},
 			&cli.IntFlag{Name: "max-iters", Value: 20, Usage: "max tool-call iterations"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -30,9 +30,18 @@ func cmdAgent() *cli.Command {
 				return err
 			}
 
-			wsAbs, err := resolveWorkspace(cmd.String("workspace"))
+			dirFlag := strings.TrimSpace(cmd.String("dir"))
+			wsAbs, sessionsDir, err := resolveDir(dirFlag)
 			if err != nil {
 				return err
+			}
+			sessionKey := strings.TrimSpace(cmd.String("session"))
+			if sessionKey == "" {
+				if dirFlag == "" {
+					sessionKey = "cli:default"
+				} else {
+					sessionKey = "default"
+				}
 			}
 
 			var (
@@ -60,7 +69,8 @@ func cmdAgent() *cli.Command {
 			a, err := agent.New(agent.Options{
 				Config:       cfg,
 				WorkspaceDir: wsAbs,
-				SessionKey:   cmd.String("session"),
+				SessionDir:   sessionsDir,
+				SessionKey:   sessionKey,
 				MaxIters:     cmd.Int("max-iters"),
 				ToolObserver: observer,
 			})
@@ -69,7 +79,8 @@ func cmdAgent() *cli.Command {
 			}
 
 			fmt.Fprintln(os.Stderr, dimStyle.Sprintf("workspace: %s", wsAbs))
-			fmt.Fprintln(os.Stderr, dimStyle.Sprintf("session: %s", cmd.String("session")))
+			fmt.Fprintln(os.Stderr, dimStyle.Sprintf("sessions: %s", sessionsDir))
+			fmt.Fprintln(os.Stderr, dimStyle.Sprintf("session: %s", sessionKey))
 
 			msg := cmd.String("message")
 			if msg != "" {

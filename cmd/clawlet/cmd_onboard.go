@@ -24,7 +24,7 @@ func cmdOnboard() *cli.Command {
 		Usage: "initialize config and workspace scaffolding",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "overwrite", Usage: "overwrite existing config if present"},
-			&cli.StringFlag{Name: "workspace", Usage: "workspace directory to initialize (default: ~/.clawlet/workspace or CLAWLET_WORKSPACE)"},
+			&cli.StringFlag{Name: "dir", Usage: "project directory to initialize (default: ~/.clawlet/workspace)"},
 			&cli.StringFlag{Name: "model", Usage: "set agents.defaults.model (e.g. openrouter/anthropic/claude-sonnet-4-5)"},
 			&cli.StringFlag{Name: "openrouter-api-key", Usage: "write env.OPENROUTER_API_KEY into config.json"},
 			&cli.StringFlag{Name: "openai-api-key", Usage: "write env.OPENAI_API_KEY into config.json"},
@@ -55,15 +55,18 @@ func cmdOnboard() *cli.Command {
 				return err
 			}
 
-			wsAbs, err := resolveWorkspace(cmd.String("workspace"))
+			wsAbs, sessionsDir, err := resolveDir(cmd.String("dir"))
 			if err != nil {
 				return err
 			}
 			if err := initWorkspace(wsAbs); err != nil {
 				return err
 			}
+			if err := os.MkdirAll(sessionsDir, 0o700); err != nil {
+				return err
+			}
 
-			fmt.Printf("initialized:\n- config: %s\n- sessions: %s\n- workspace: %s\n", cfgPath, paths.SessionsDir(), wsAbs)
+			fmt.Printf("initialized:\n- config: %s\n- sessions: %s\n- workspace: %s\n", cfgPath, sessionsDir, wsAbs)
 			return nil
 		},
 	}

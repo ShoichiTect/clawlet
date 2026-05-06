@@ -1,42 +1,20 @@
 package tui
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/mosaxiv/clawlet/agent"
+	"github.com/mosaxiv/clawlet/config"
+	"github.com/mosaxiv/clawlet/session"
 )
 
-type GatewayStatus string
-
-const (
-	StatusOnline      GatewayStatus = "online"
-	StatusOffline     GatewayStatus = "offline"
-	StatusStaleSocket GatewayStatus = "stale socket"
-	StatusTimeout     GatewayStatus = "timeout"
-	StatusError       GatewayStatus = "error"
-)
-
-type HealthResponse struct {
-	Status    string `json:"status"`
-	Workspace string `json:"workspace"`
-	PID       int    `json:"pid"`
-}
-
-type ChatResponse struct {
-	Content   string   `json:"content"`
-	ToolsUsed []string `json:"tools_used"`
-}
+// ---- Domain types (shared between runner and model) ----
 
 type ChatStreamEvent struct {
 	Type       string   `json:"type"`
@@ -49,13 +27,6 @@ type ChatStreamEvent struct {
 	ToolsUsed  []string `json:"tools_used,omitempty"`
 }
 
-type SessionMessage struct {
-	Role      string   `json:"role"`
-	Content   string   `json:"content"`
-	Timestamp string   `json:"timestamp,omitempty"`
-	ToolsUsed []string `json:"tools_used,omitempty"`
-}
-
 type SessionSummary struct {
 	Key          string    `json:"key"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -64,8 +35,11 @@ type SessionSummary struct {
 	Preview      string    `json:"preview,omitempty"`
 }
 
-type SessionListResponse struct {
-	Sessions []SessionSummary `json:"sessions"`
+type SessionMessage struct {
+	Role      string   `json:"role"`
+	Content   string   `json:"content"`
+	Timestamp string   `json:"timestamp,omitempty"`
+	ToolsUsed []string `json:"tools_used,omitempty"`
 }
 
 type SessionDetail struct {
@@ -76,345 +50,189 @@ type SessionDetail struct {
 	Messages     []SessionMessage `json:"messages"`
 }
 
-type GatewayResult struct {
-	Status GatewayStatus
-	Health HealthResponse
-	Error  string
+type ChatResponse struct {
+	Content   string   `json:"content"`
+	ToolsUsed []string `json:"tools_used"`
 }
 
-type GatewayError struct {
-	Status GatewayStatus
-	Err    error
-}
+// ---- Runner ----
 
-func (e *GatewayError) Error() string {
-	if e == nil || e.Err == nil {
-		return ""
-	}
-	return e.Err.Error()
-}
-
-func SocketPath(workspace string) string {
-	return filepath.Join(workspace, ".clawlet", "gateway.sock")
-}
-
-func CheckHealth(ctx context.Context, workspace string, timeout time.Duration) GatewayResult {
-	sockPath := SocketPath(workspace)
-	if _, err := os.Stat(sockPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return GatewayResult{Status: StatusOffline, Error: "socket not found"}
-		}
-		return GatewayResult{Status: StatusError, Error: err.Error()}
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	client := unixHTTPClient(sockPath, timeout)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://unix/api/health", nil)
-	if err != nil {
-		return GatewayResult{Status: StatusError, Error: err.Error()}
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		status := classifyRequestError(ctx, err)
-		return GatewayResult{Status: status, Error: err.Error()}
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		msg := strings.TrimSpace(string(body))
-		if msg == "" {
-			msg = resp.Status
-		}
-		return GatewayResult{Status: StatusError, Error: msg}
-	}
-	var health HealthResponse
-	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
-		return GatewayResult{Status: StatusError, Error: "decode health: " + err.Error()}
-	}
-	if strings.ToLower(strings.TrimSpace(health.Status)) != "ok" {
-		return GatewayResult{Status: StatusError, Health: health, Error: "gateway status is " + health.Status}
-	}
-	return GatewayResult{Status: StatusOnline, Health: health}
-}
-
-func SendChat(ctx context.Context, workspace string, message string, sessionKey string, timeout time.Duration) (ChatResponse, error) {
+// RunTurn executes a single user message via agent.Agent, streaming
+// tool events through a channel.
+func RunTurn(ctx context.Context, cfg *config.Config, workspace, message, sessionKey string, maxIters int) (<-chan ChatStreamEvent, error) {
 	message = strings.TrimSpace(message)
 	if message == "" {
-		return ChatResponse{}, &GatewayError{Status: StatusError, Err: fmt.Errorf("message is required")}
+		return nil, fmt.Errorf("message is required")
 	}
 	if strings.TrimSpace(sessionKey) == "" {
 		sessionKey = defaultSessionKey
 	}
-
-	sockPath := SocketPath(workspace)
-	if _, err := os.Stat(sockPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return ChatResponse{}, &GatewayError{Status: StatusOffline, Err: fmt.Errorf("socket not found")}
-		}
-		return ChatResponse{}, &GatewayError{Status: StatusError, Err: err}
+	if maxIters <= 0 {
+		maxIters = 20
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	wsAbs, err := filepath.Abs(workspace)
+	if err != nil {
+		return nil, err
+	}
+	sessionsDir := filepath.Join(wsAbs, ".clawlet", "sessions")
 
-	body, err := json.Marshal(map[string]string{
-		"message":     message,
-		"session_key": sessionKey,
+	events := make(chan ChatStreamEvent, 16)
+	var toolsUsed []string
+
+	a, err := agent.New(agent.Options{
+		Config:       cfg,
+		WorkspaceDir: wsAbs,
+		SessionDir:   sessionsDir,
+		SessionKey:   sessionKey,
+		MaxIters:     maxIters,
+		ToolObserver: func(ev agent.ToolEvent) {
+			switch ev.Phase {
+			case agent.ToolStart:
+				events <- ChatStreamEvent{Type: "tool_start", Name: ev.Name, Args: ev.Args}
+			case agent.ToolEnd:
+				if ev.Error == "" {
+					toolsUsed = append(toolsUsed, ev.Name)
+				}
+				events <- ChatStreamEvent{
+					Type:       "tool_end",
+					Name:       ev.Name,
+					Output:     ev.Output,
+					Error:      ev.Error,
+					DurationMS: ev.Duration.Milliseconds(),
+				}
+			}
+		},
 	})
 	if err != nil {
-		return ChatResponse{}, &GatewayError{Status: StatusError, Err: err}
+		return nil, err
 	}
 
-	client := unixHTTPClient(sockPath, timeout)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/api/chat", bytes.NewReader(body))
-	if err != nil {
-		return ChatResponse{}, &GatewayError{Status: StatusError, Err: err}
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return ChatResponse{}, &GatewayError{Status: classifyRequestError(ctx, err), Err: err}
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-		msg := gatewayErrorMessage(body, resp.Status)
-		return ChatResponse{}, &GatewayError{Status: StatusError, Err: fmt.Errorf("gateway API error: %s", msg)}
-	}
-	var out ChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return ChatResponse{}, &GatewayError{Status: StatusError, Err: fmt.Errorf("decode chat response: %w", err)}
-	}
-	return out, nil
-}
-
-func FetchSessions(ctx context.Context, workspace string, timeout time.Duration) (SessionListResponse, error) {
-	var out SessionListResponse
-	if err := doGatewayJSON(ctx, workspace, timeout, http.MethodGet, "http://unix/api/sessions", nil, &out); err != nil {
-		return SessionListResponse{}, err
-	}
-	return out, nil
-}
-
-func FetchSession(ctx context.Context, workspace string, key string, timeout time.Duration) (SessionDetail, error) {
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return SessionDetail{}, &GatewayError{Status: StatusError, Err: fmt.Errorf("session key is required")}
-	}
-	var out SessionDetail
-	endpoint := "http://unix/api/session?key=" + url.QueryEscape(key)
-	if err := doGatewayJSON(ctx, workspace, timeout, http.MethodGet, endpoint, nil, &out); err != nil {
-		return SessionDetail{}, err
-	}
-	return out, nil
-}
-
-func CreateSession(ctx context.Context, workspace string, key string, timeout time.Duration) (SessionDetail, error) {
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return SessionDetail{}, &GatewayError{Status: StatusError, Err: fmt.Errorf("session key is required")}
-	}
-	body, err := json.Marshal(map[string]string{"key": key})
-	if err != nil {
-		return SessionDetail{}, &GatewayError{Status: StatusError, Err: err}
-	}
-	var out SessionDetail
-	if err := doGatewayJSON(ctx, workspace, timeout, http.MethodPost, "http://unix/api/sessions", body, &out); err != nil {
-		return SessionDetail{}, err
-	}
-	return out, nil
-}
-
-func doGatewayJSON(ctx context.Context, workspace string, timeout time.Duration, method string, endpoint string, body []byte, out any) error {
-	sockPath := SocketPath(workspace)
-	if _, err := os.Stat(sockPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return &GatewayError{Status: StatusOffline, Err: fmt.Errorf("socket not found")}
-		}
-		return &GatewayError{Status: StatusError, Err: err}
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	var reader io.Reader
-	if body != nil {
-		reader = bytes.NewReader(body)
-	}
-	client := unixHTTPClient(sockPath, timeout)
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
-	if err != nil {
-		return &GatewayError{Status: StatusError, Err: err}
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return &GatewayError{Status: classifyRequestError(ctx, err), Err: err}
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-		return &GatewayError{Status: StatusError, Err: fmt.Errorf("gateway API error: %s", gatewayErrorMessage(b, resp.Status))}
-	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return &GatewayError{Status: StatusError, Err: fmt.Errorf("decode gateway response: %w", err)}
-	}
-	return nil
-}
-
-func StreamChat(ctx context.Context, workspace string, message string, sessionKey string, timeout time.Duration) <-chan ChatStreamEvent {
-	events := make(chan ChatStreamEvent, 16)
 	go func() {
 		defer close(events)
-		if err := streamChat(ctx, workspace, message, sessionKey, timeout, func(ev ChatStreamEvent) {
-			events <- ev
-		}); err != nil {
+
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+
+		final, err := a.Process(ctx, message)
+		if err != nil {
 			events <- ChatStreamEvent{Type: "error", Error: err.Error()}
-		}
-	}()
-	return events
-}
-
-func streamChat(ctx context.Context, workspace string, message string, sessionKey string, timeout time.Duration, emit func(ChatStreamEvent)) error {
-	message = strings.TrimSpace(message)
-	if message == "" {
-		return &GatewayError{Status: StatusError, Err: fmt.Errorf("message is required")}
-	}
-	if strings.TrimSpace(sessionKey) == "" {
-		sessionKey = defaultSessionKey
-	}
-
-	sockPath := SocketPath(workspace)
-	if _, err := os.Stat(sockPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return &GatewayError{Status: StatusOffline, Err: fmt.Errorf("socket not found")}
-		}
-		return &GatewayError{Status: StatusError, Err: err}
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	body, err := json.Marshal(map[string]string{
-		"message":     message,
-		"session_key": sessionKey,
-	})
-	if err != nil {
-		return &GatewayError{Status: StatusError, Err: err}
-	}
-
-	client := unixHTTPClient(sockPath, timeout)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/api/chat/stream", bytes.NewReader(body))
-	if err != nil {
-		return &GatewayError{Status: StatusError, Err: err}
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-	resp, err := client.Do(req)
-	if err != nil {
-		return &GatewayError{Status: classifyRequestError(ctx, err), Err: err}
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-		msg := gatewayErrorMessage(body, resp.Status)
-		return &GatewayError{Status: StatusError, Err: fmt.Errorf("gateway stream API error: %s", msg)}
-	}
-	return consumeSSE(resp.Body, emit)
-}
-
-func consumeSSE(r io.Reader, emit func(ChatStreamEvent)) error {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 2<<20)
-
-	var eventName string
-	var dataLines []string
-	dispatch := func() {
-		if eventName == "" && len(dataLines) == 0 {
-			return
-		}
-		data := strings.Join(dataLines, "\n")
-		ev := ChatStreamEvent{Type: eventName}
-		if strings.TrimSpace(data) != "" {
-			if err := json.Unmarshal([]byte(data), &ev); err != nil {
-				ev = ChatStreamEvent{Type: "error", Error: "decode stream event: " + err.Error()}
+		} else {
+			events <- ChatStreamEvent{
+				Type:      "assistant_final",
+				Content:   final,
+				ToolsUsed: toolsUsed,
 			}
 		}
-		if ev.Type == "" {
-			ev.Type = eventName
-		}
-		emit(ev)
-		eventName = ""
-		dataLines = nil
-	}
+		events <- ChatStreamEvent{Type: "done"}
+	}()
 
-	for scanner.Scan() {
-		line := strings.TrimSuffix(scanner.Text(), "\r")
-		if line == "" {
-			dispatch()
+	return events, nil
+}
+
+// ListSessions returns all sessions for a workspace.
+func ListSessions(workspace string) ([]SessionSummary, error) {
+	wsAbs, err := filepath.Abs(workspace)
+	if err != nil {
+		return nil, err
+	}
+	sessionsDir := filepath.Join(wsAbs, ".clawlet", "sessions")
+	all, err := session.List(sessionsDir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SessionSummary, 0, len(all))
+	for _, s := range all {
+		if s == nil {
 			continue
 		}
-		if strings.HasPrefix(line, ":") {
-			continue
+		preview := ""
+		if len(s.Messages) > 0 {
+			last := s.Messages[len(s.Messages)-1]
+			content := strings.TrimSpace(last.Content)
+			if len(content) > 80 {
+				content = content[:80]
+			}
+			preview = content
 		}
-		field, value, ok := strings.Cut(line, ":")
-		if ok {
-			value = strings.TrimPrefix(value, " ")
-		} else {
-			value = ""
-		}
-		switch field {
-		case "event":
-			eventName = value
-		case "data":
-			dataLines = append(dataLines, value)
-		}
+		out = append(out, SessionSummary{
+			Key:          s.Key,
+			CreatedAt:    s.CreatedAt,
+			UpdatedAt:    s.UpdatedAt,
+			MessageCount: len(s.Messages),
+			Preview:      preview,
+		})
 	}
-	dispatch()
-	return scanner.Err()
+	return out, nil
 }
 
-func gatewayErrorMessage(body []byte, fallback string) string {
-	var payload struct {
-		Error string `json:"error"`
+// GetSession returns full session detail.
+func GetSession(workspace, key string) (SessionDetail, error) {
+	wsAbs, err := filepath.Abs(workspace)
+	if err != nil {
+		return SessionDetail{}, err
 	}
-	if err := json.Unmarshal(body, &payload); err == nil && strings.TrimSpace(payload.Error) != "" {
-		return strings.TrimSpace(payload.Error)
+	sessionsDir := filepath.Join(wsAbs, ".clawlet", "sessions")
+	s, err := session.Load(sessionsDir, key)
+	if err != nil {
+		return SessionDetail{}, err
 	}
-	msg := strings.TrimSpace(string(body))
-	if msg == "" {
-		msg = fallback
+	if s == nil {
+		return SessionDetail{Key: key}, nil
 	}
-	return msg
+	msgs := make([]SessionMessage, 0, len(s.Messages))
+	for _, m := range s.Messages {
+		msgs = append(msgs, SessionMessage{
+			Role:      m.Role,
+			Content:   m.Content,
+			Timestamp: m.Timestamp,
+			ToolsUsed: m.ToolsUsed,
+		})
+	}
+	return SessionDetail{
+		Key:          s.Key,
+		CreatedAt:    s.CreatedAt,
+		UpdatedAt:    s.UpdatedAt,
+		MessageCount: len(s.Messages),
+		Messages:     msgs,
+	}, nil
 }
 
-func unixHTTPClient(sockPath string, timeout time.Duration) *http.Client {
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			var dialer net.Dialer
-			return dialer.DialContext(ctx, "unix", sockPath)
-		},
+// CreateSession creates a new empty session.
+func CreateSession(workspace, key string) (SessionDetail, error) {
+	wsAbs, err := filepath.Abs(workspace)
+	if err != nil {
+		return SessionDetail{}, err
 	}
-	return &http.Client{Transport: transport, Timeout: timeout}
+	sessionsDir := filepath.Join(wsAbs, ".clawlet", "sessions")
+	s := session.New(key)
+	s.CreatedAt = time.Now()
+	s.UpdatedAt = time.Now()
+	if err := session.Save(sessionsDir, s); err != nil {
+		return SessionDetail{}, err
+	}
+	return SessionDetail{
+		Key:       s.Key,
+		CreatedAt: s.CreatedAt,
+		UpdatedAt: s.UpdatedAt,
+	}, nil
 }
 
-func classifyRequestError(ctx context.Context, err error) GatewayStatus {
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
-		return StatusTimeout
+// CheckProject verifies a workspace directory exists and can be used.
+func CheckProject(workspace string) error {
+	abs, err := filepath.Abs(workspace)
+	if err != nil {
+		return err
 	}
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded") {
-		return StatusTimeout
+	info, err := os.Stat(abs)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("directory not found: %s", abs)
+		}
+		return err
 	}
-	if strings.Contains(msg, "connect: connection refused") || strings.Contains(msg, "no such file") || strings.Contains(msg, "broken pipe") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "eof") {
-		return StatusStaleSocket
+	if !info.IsDir() {
+		return fmt.Errorf("not a directory: %s", abs)
 	}
-	return StatusStaleSocket
+	return nil
 }

@@ -5,17 +5,30 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"time"
 
 	"github.com/mosaxiv/clawlet/paths"
 )
 
+type ProjectStatus int
+
+const (
+	ProjectReady ProjectStatus = iota
+	ProjectOffline
+)
+
+func (s ProjectStatus) String() string {
+	switch s {
+	case ProjectReady:
+		return "ready"
+	default:
+		return "offline"
+	}
+}
+
 type ProjectView struct {
 	Path       string
 	SessionKey string
-	SocketPath string
-	Status     GatewayStatus
-	Health     HealthResponse
+	Status     ProjectStatus
 	Error      string
 	Saved      bool
 }
@@ -43,8 +56,7 @@ func DiscoverProjects(st State) []ProjectView {
 		seen[abs] = &ProjectView{
 			Path:       abs,
 			SessionKey: sessionKey,
-			SocketPath: SocketPath(abs),
-			Status:     StatusOffline,
+			Status:     ProjectOffline,
 			Saved:      saved,
 		}
 		order = append(order, abs)
@@ -70,16 +82,17 @@ func DiscoverProjects(st State) []ProjectView {
 func ScanProjects(ctx context.Context, st State) []ProjectView {
 	projects := DiscoverProjects(st)
 	for i := range projects {
-		result := CheckHealth(ctx, projects[i].Path, 800*time.Millisecond)
-		projects[i].Status = result.Status
-		projects[i].Health = result.Health
-		projects[i].Error = result.Error
+		if CheckProject(projects[i].Path) == nil {
+			projects[i].Status = ProjectReady
+		} else {
+			projects[i].Status = ProjectOffline
+		}
 	}
 	sort.SliceStable(projects, func(i, j int) bool {
-		if projects[i].Status == StatusOnline && projects[j].Status != StatusOnline {
+		if projects[i].Status == ProjectReady && projects[j].Status != ProjectReady {
 			return true
 		}
-		if projects[i].Status != StatusOnline && projects[j].Status == StatusOnline {
+		if projects[i].Status != ProjectReady && projects[j].Status == ProjectReady {
 			return false
 		}
 		if projects[i].Saved != projects[j].Saved {

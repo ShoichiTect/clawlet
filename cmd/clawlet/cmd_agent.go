@@ -31,11 +31,17 @@ func cmdAgent() *cli.Command {
 			msg := cmd.String("message")
 			dirFlag := strings.TrimSpace(cmd.String("dir"))
 			if msg == "" && !cmd.Bool("stdout") {
-				return clawlettui.RunWithOptions(ctx, clawlettui.RunOptions{
-					ProjectPath: dirFlag,
-					SessionKey:  strings.TrimSpace(cmd.String("session")),
-				})
+			cfg, _, err := loadConfig()
+			if err != nil {
+				return err
 			}
+			return clawlettui.RunWithOptions(ctx, clawlettui.RunOptions{
+				Config:      cfg,
+				ProjectPath: dirFlag,
+				SessionKey:  strings.TrimSpace(cmd.String("session")),
+				MaxIters:    int(cmd.Int("max-iters")),
+			})
+		}
 
 			cfg, _, err := loadConfig()
 			if err != nil {

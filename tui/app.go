@@ -6,9 +6,12 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mosaxiv/clawlet/config"
 )
 
 type RunOptions struct {
+	Config      *config.Config
+	MaxIters    int
 	ProjectPath string
 	SessionKey  string
 }
@@ -18,6 +21,11 @@ func Run(ctx context.Context) error {
 }
 
 func RunWithOptions(ctx context.Context, opts RunOptions) error {
+	maxIters := opts.MaxIters
+	if maxIters <= 0 {
+		maxIters = 20
+	}
+
 	st, err := LoadState()
 	if err != nil {
 		return err
@@ -29,7 +37,7 @@ func RunWithOptions(ctx context.Context, opts RunOptions) error {
 		}
 		st = upsertProjectState(st, opts.ProjectPath, sessionKey, time.Now().UTC())
 	}
-	program := tea.NewProgram(newModel(st), tea.WithContext(ctx))
+	program := tea.NewProgram(newModel(opts.Config, maxIters, st), tea.WithContext(ctx))
 	_, err = program.Run()
 	return err
 }

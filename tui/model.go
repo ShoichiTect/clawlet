@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mosaxiv/clawlet/config"
 )
 
 type screenMode int
@@ -41,6 +41,9 @@ type chatMessage struct {
 }
 
 type model struct {
+	cfg      *config.Config
+	maxIters int
+
 	state    State
 	projects []ProjectView
 	cursor   int
@@ -74,12 +77,6 @@ type scanDoneMsg struct {
 	projects []ProjectView
 }
 
-type chatDoneMsg struct {
-	response ChatResponse
-	status   GatewayStatus
-	err      error
-}
-
 type chatStreamStartedMsg struct {
 	events <-chan ChatStreamEvent
 }
@@ -106,8 +103,6 @@ type sessionCreateDoneMsg struct {
 	err    error
 }
 
-type healthDoneMsg GatewayResult
-
 var (
 	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63"))
 	helpStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
@@ -121,7 +116,7 @@ var (
 	toolStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("220"))
 )
 
-func newModel(st State) model {
+func newModel(cfg *config.Config, maxIters int, st State) model {
 	chat := textinput.New()
 	chat.Prompt = ""
 	chat.Placeholder = "type a message"
@@ -134,6 +129,8 @@ func newModel(st State) model {
 	prompt.Width = 80
 
 	return model{
+		cfg:         cfg,
+		maxIters:    maxIters,
 		state:       normalizeState(st),
 		projects:    DiscoverProjects(st),
 		chatInput:   chat,
@@ -171,24 +168,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = fmt.Sprintf("found %d project(s)", len(m.projects))
 		m.errorMsg = ""
 		return m, nil
-	case chatDoneMsg:
-		m.chatting = false
-		if m.screen != screenChat {
-			return m, nil
-		}
-		if msg.err != nil {
-			m.latestTools = nil
-			errorMsg := chatMessage{Role: "error", Content: fmt.Sprintf("%s: %v", msg.status, msg.err)}
-			m.messages = append(m.messages, errorMsg)
-			m.errorMsg = msg.err.Error()
-			return m, tea.Println(renderTranscriptMessage(errorMsg, nil))
-		}
-		m.latestTools = msg.response.ToolsUsed
-		assistantMsg := chatMessage{Role: "assistant", Content: msg.response.Content}
-		m.messages = append(m.messages, assistantMsg)
-		m.status = "response received"
-		m.errorMsg = ""
-		return m, tea.Println(renderTranscriptMessage(assistantMsg, msg.response.ToolsUsed))
 	case chatStreamStartedMsg:
 		return m, readChatStreamCmd(msg.events)
 	case chatStreamEventMsg:
@@ -266,19 +245,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.switchSession(msg.detail.Key)
-	case healthDoneMsg:
-		m.selected.Status = msg.Status
-		m.selected.Health = msg.Health
-		m.selected.Error = msg.Error
-		m.updateProject(m.selected)
-		if msg.Status == StatusOnline {
-			m.status = "gateway online"
-			m.errorMsg = ""
-		} else {
-			m.status = string(msg.Status)
-			m.errorMsg = msg.Error
-		}
-		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -373,9 +339,12 @@ func (m model) handleProjectKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd)
 			return m, nil
 		}
 		p := m.projects[m.cursor]
-		if p.Status != StatusOnline {
-			m.status = fmt.Sprintf("gateway %s", p.Status)
-			m.errorMsg = gatewayStartHint(p.Path)
+		if p.Status != ProjectReady {
+			m.status = fmt.Sprintf("project %s", p.Status)
+			m.errorMsg = p.Error
+			if m.errorMsg == "" {
+				m.errorMsg = fmt.Sprintf("directory not accessible: %s", p.Path)
+			}
 			return m, nil
 		}
 		m.selected = p
@@ -437,10 +406,6 @@ func (m model) handleChatKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = "loading sessions..."
 		m.errorMsg = ""
 		return m, sessionsCmd(m.selected.Path)
-	case "ctrl+r":
-		m.status = "checking gateway health..."
-		m.errorMsg = ""
-		return m, healthCmd(m.selected.Path)
 	case "ctrl+l":
 		m.messages = nil
 		m.latestTools = nil
@@ -462,7 +427,7 @@ func (m model) handleChatKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.errorMsg = ""
 		return m, tea.Sequence(
 			tea.Println(renderTranscriptMessage(userMsg, nil)),
-			chatStreamCmd(m.selected.Path, message, m.selected.SessionKey),
+			chatStreamCmd(m.cfg, m.selected.Path, message, m.selected.SessionKey, m.maxIters),
 		)
 	}
 
@@ -585,16 +550,14 @@ func (m model) viewProjects() string {
 		if i == m.cursor {
 			cursor = ">"
 		}
-		line := fmt.Sprintf("%s %s  %s", cursor, renderStatus(p.Status), p.Path)
+		line := fmt.Sprintf("%s %s  %s", cursor, renderProjectStatus(p.Status), p.Path)
 		if p.Saved {
 			line += dimStyle.Render("  saved")
 		}
 		b.WriteString(line)
 		b.WriteString("\n")
-		meta := fmt.Sprintf("    session=%s socket=%s", p.SessionKey, p.SocketPath)
-		if p.Status == StatusOnline {
-			meta += fmt.Sprintf(" pid=%d workspace=%s", p.Health.PID, p.Health.Workspace)
-		} else if p.Error != "" {
+		meta := fmt.Sprintf("    session=%s", p.SessionKey)
+		if p.Error != "" {
 			meta += " " + p.Error
 		}
 		b.WriteString(dimStyle.Render(meta))
@@ -609,10 +572,6 @@ func (m model) viewProjects() string {
 
 	b.WriteString("\n")
 	b.WriteString(m.statusLine())
-	if len(m.projects) > 0 && m.projects[m.cursor].Status != StatusOnline {
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render(gatewayStartHint(m.projects[m.cursor].Path)))
-	}
 	return b.String()
 }
 
@@ -651,7 +610,7 @@ func (m model) viewChat() string {
 			b.WriteString(status)
 			b.WriteString("\n")
 		}
-		b.WriteString(helpStyle.Render("Enter: send  Esc: projects  Ctrl+S: sessions  Ctrl+R: health  Ctrl+L: clear  Ctrl+C: quit"))
+		b.WriteString(helpStyle.Render("Enter: send  Esc: projects  Ctrl+S: sessions  Ctrl+L: clear  Ctrl+C: quit"))
 		b.WriteString("\n")
 		b.WriteString(m.chatFooter())
 	}
@@ -754,65 +713,16 @@ func lastNMessages(msgs []SessionMessage, n int) []SessionMessage {
 }
 
 func (m model) chatFooter() string {
-	health := string(m.selected.Status)
-	if m.selected.Status == StatusOnline {
-		health = fmt.Sprintf("online pid=%d", m.selected.Health.PID)
-	}
-	return dimStyle.Render(fmt.Sprintf("root: %s  session: %s  gateway: %s", m.selected.Path, m.selected.SessionKey, health))
-}
-
-func (m model) renderChatLog(maxLines int) string {
-	if len(m.messages) == 0 {
-		return dimStyle.Render("No messages yet.") + "\n"
-	}
-	width := m.width - 4
-	if width < 40 {
-		width = 80
-	}
-	var lines []string
-	for _, msg := range m.messages {
-		label := msg.Role
-		switch msg.Role {
-		case "user":
-			label = userStyle.Render("user")
-		case "assistant":
-			label = agentStyle.Render("assistant")
-		case "error":
-			label = errorStyle.Render("error")
-		case "session-changed":
-			label = warnStyle.Render("session-changed")
-		default:
-			label = systemStyle.Render(msg.Role)
-		}
-		content := strings.TrimSpace(msg.Content)
-		if content == "" {
-			content = "(empty)"
-		}
-		wrapped := lipgloss.NewStyle().Width(width).Render(content)
-		parts := strings.Split(wrapped, "\n")
-		lines = append(lines, label+":")
-		for _, p := range parts {
-			lines = append(lines, "  "+p)
-		}
-		lines = append(lines, "")
-	}
-	if len(lines) > maxLines {
-		lines = lines[len(lines)-maxLines:]
-	}
-	return strings.Join(lines, "\n") + "\n"
+	status := m.selected.Status.String()
+	return dimStyle.Render(fmt.Sprintf("root: %s  session: %s  status: %s", m.selected.Path, m.selected.SessionKey, status))
 }
 
 func renderChatHeader(p ProjectView) string {
-	health := string(p.Status)
-	if p.Status == StatusOnline {
-		health = fmt.Sprintf("online pid=%d", p.Health.PID)
-	}
-
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("clawlet tui — chat"))
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("project: %s\n", p.Path))
-	b.WriteString(fmt.Sprintf("session: %s  gateway: %s", p.SessionKey, renderStatusText(p.Status, health)))
+	b.WriteString(fmt.Sprintf("session: %s  status: %s", p.SessionKey, renderProjectStatusText(p.Status)))
 	return b.String()
 }
 
@@ -1015,24 +925,13 @@ func scanProjectsCmd(st State) tea.Cmd {
 	}
 }
 
-func chatCmd(workspace string, message string, sessionKey string) tea.Cmd {
+func chatStreamCmd(cfg *config.Config, workspace, message, sessionKey string, maxIters int) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := SendChat(context.Background(), workspace, message, sessionKey, 10*time.Minute)
-		if err == nil {
-			return chatDoneMsg{response: resp}
+		events, err := RunTurn(context.Background(), cfg, workspace, message, sessionKey, maxIters)
+		if err != nil {
+			return sessionsDoneMsg{err: err}
 		}
-		status := StatusError
-		var gatewayErr *GatewayError
-		if errors.As(err, &gatewayErr) {
-			status = gatewayErr.Status
-		}
-		return chatDoneMsg{status: status, err: err}
-	}
-}
-
-func chatStreamCmd(workspace string, message string, sessionKey string) tea.Cmd {
-	return func() tea.Msg {
-		return chatStreamStartedMsg{events: StreamChat(context.Background(), workspace, message, sessionKey, 10*time.Minute)}
+		return chatStreamStartedMsg{events: events}
 	}
 }
 
@@ -1046,17 +945,11 @@ func readChatStreamCmd(events <-chan ChatStreamEvent) tea.Cmd {
 	}
 }
 
-func healthCmd(workspace string) tea.Cmd {
-	return func() tea.Msg {
-		return healthDoneMsg(CheckHealth(context.Background(), workspace, 800*time.Millisecond))
-	}
-}
-
 func sessionsCmd(workspace string) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := FetchSessions(context.Background(), workspace, 5*time.Second)
+		list, err := ListSessions(workspace)
 		if err == nil {
-			return sessionsDoneMsg{sessions: resp.Sessions}
+			return sessionsDoneMsg{sessions: list}
 		}
 		return sessionsDoneMsg{err: err}
 	}
@@ -1064,7 +957,7 @@ func sessionsCmd(workspace string) tea.Cmd {
 
 func sessionPreviewCmd(workspace string, key string) tea.Cmd {
 	return func() tea.Msg {
-		detail, err := FetchSession(context.Background(), workspace, key, 5*time.Second)
+		detail, err := GetSession(workspace, key)
 		if err == nil {
 			return sessionPreviewDoneMsg{detail: detail}
 		}
@@ -1074,7 +967,7 @@ func sessionPreviewCmd(workspace string, key string) tea.Cmd {
 
 func createSessionCmd(workspace string, key string) tea.Cmd {
 	return func() tea.Msg {
-		detail, err := CreateSession(context.Background(), workspace, key, 5*time.Second)
+		detail, err := CreateSession(workspace, key)
 		if err == nil {
 			return sessionCreateDoneMsg{detail: detail}
 		}
@@ -1082,23 +975,15 @@ func createSessionCmd(workspace string, key string) tea.Cmd {
 	}
 }
 
-func renderStatus(status GatewayStatus) string {
-	return renderStatusText(status, string(status))
+func renderProjectStatus(status ProjectStatus) string {
+	return renderProjectStatusText(status)
 }
 
-func renderStatusText(status GatewayStatus, text string) string {
+func renderProjectStatusText(status ProjectStatus) string {
 	switch status {
-	case StatusOnline:
-		return successStyle.Render(text)
-	case StatusOffline:
-		return dimStyle.Render(text)
-	case StatusStaleSocket, StatusTimeout:
-		return warnStyle.Render(text)
+	case ProjectReady:
+		return successStyle.Render(status.String())
 	default:
-		return errorStyle.Render(text)
+		return dimStyle.Render(status.String())
 	}
-}
-
-func gatewayStartHint(path string) string {
-	return fmt.Sprintf("start gateway: clawlet gateway --dir %s", path)
 }

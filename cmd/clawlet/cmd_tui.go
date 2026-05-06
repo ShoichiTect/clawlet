@@ -10,9 +10,16 @@ import (
 func cmdTUI() *cli.Command {
 	return &cli.Command{
 		Name:  "tui",
-		Usage: "open the local terminal UI for gateway chat",
+		Usage: "open the local terminal UI for agent chat",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			return clawlettui.Run(ctx)
+			cfg, _, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			return clawlettui.RunWithOptions(ctx, clawlettui.RunOptions{
+				Config:   cfg,
+				MaxIters: 20,
+			})
 		},
 	}
 }

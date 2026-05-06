@@ -82,7 +82,8 @@ var (
 
 func newModel(st State) model {
 	chat := textinput.New()
-	chat.Placeholder = "message"
+	chat.Prompt = ""
+	chat.Placeholder = "type a message"
 	chat.CharLimit = 0
 	chat.Width = 80
 	chat.Focus()
@@ -136,15 +137,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err != nil {
 			m.latestTools = nil
-			m.messages = append(m.messages, chatMessage{Role: "system", Content: fmt.Sprintf("%s: %v", msg.status, msg.err)})
+			systemMsg := chatMessage{Role: "system", Content: fmt.Sprintf("%s: %v", msg.status, msg.err)}
+			m.messages = append(m.messages, systemMsg)
 			m.errorMsg = msg.err.Error()
-			return m, nil
+			return m, tea.Println(renderTranscriptMessage(systemMsg, nil))
 		}
 		m.latestTools = msg.response.ToolsUsed
-		m.messages = append(m.messages, chatMessage{Role: "assistant", Content: msg.response.Content})
+		assistantMsg := chatMessage{Role: "assistant", Content: msg.response.Content}
+		m.messages = append(m.messages, assistantMsg)
 		m.status = "response received"
 		m.errorMsg = ""
-		return m, nil
+		return m, tea.Println(renderTranscriptMessage(assistantMsg, msg.response.ToolsUsed))
 	case healthDoneMsg:
 		m.selected.Status = msg.Status
 		m.selected.Health = msg.Health
@@ -266,6 +269,7 @@ func (m model) handleProjectKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		_ = SaveState(m.state)
 		m.status = "connected"
 		m.errorMsg = ""
+		return m, tea.Println(renderChatHeader(m.selected))
 	}
 	return m, nil
 }
@@ -324,8 +328,8 @@ func (m model) handleChatKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+l":
 		m.messages = nil
 		m.latestTools = nil
-		m.status = "chat log cleared"
-		return m, nil
+		m.status = "chat preview cleared (terminal scrollback remains)"
+		return m, tea.ClearScreen
 	case "enter":
 		if m.chatting {
 			return m, nil
@@ -334,12 +338,16 @@ func (m model) handleChatKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if message == "" {
 			return m, nil
 		}
-		m.messages = append(m.messages, chatMessage{Role: "user", Content: message})
+		userMsg := chatMessage{Role: "user", Content: message}
+		m.messages = append(m.messages, userMsg)
 		m.chatInput.SetValue("")
 		m.chatting = true
 		m.status = "sending message..."
 		m.errorMsg = ""
-		return m, chatCmd(m.selected.Path, message, m.selected.SessionKey)
+		return m, tea.Sequence(
+			tea.Println(renderTranscriptMessage(userMsg, nil)),
+			chatCmd(m.selected.Path, message, m.selected.SessionKey),
+		)
 	}
 
 	var cmd tea.Cmd
@@ -403,35 +411,6 @@ func (m model) viewProjects() string {
 
 func (m model) viewChat() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("clawlet tui — chat"))
-	b.WriteString("\n")
-	health := string(m.selected.Status)
-	if m.selected.Status == StatusOnline {
-		health = fmt.Sprintf("online pid=%d", m.selected.Health.PID)
-	}
-	b.WriteString(fmt.Sprintf("project: %s\n", m.selected.Path))
-	b.WriteString(fmt.Sprintf("session: %s  gateway: %s\n", m.selected.SessionKey, renderStatusText(m.selected.Status, health)))
-	b.WriteString(helpStyle.Render("Enter: send  Esc: projects  Ctrl+S: session  Ctrl+R: health  Ctrl+L: clear  Ctrl+C: quit"))
-	b.WriteString("\n\n")
-
-	logHeight := m.height - 12
-	if logHeight < 8 {
-		logHeight = 8
-	}
-	b.WriteString(m.renderChatLog(logHeight))
-	b.WriteString("\n")
-
-	if len(m.latestTools) > 0 {
-		b.WriteString(dimStyle.Render("tools_used: " + strings.Join(m.latestTools, ", ")))
-		b.WriteString("\n")
-	} else {
-		b.WriteString(dimStyle.Render("tools_used: -"))
-		b.WriteString("\n")
-	}
-	if m.chatting {
-		b.WriteString(warnStyle.Render("sending..."))
-		b.WriteString("\n")
-	}
 	if m.prompt == promptSessionKey {
 		b.WriteString(m.promptInput.View())
 		b.WriteString("\n")
@@ -440,8 +419,34 @@ func (m model) viewChat() string {
 		b.WriteString(m.chatInput.View())
 		b.WriteString("\n")
 	}
-	b.WriteString(m.statusLine())
+
+	if m.chatting {
+		b.WriteString(warnStyle.Render("sending..."))
+		b.WriteString("\n")
+	}
+	if len(m.latestTools) > 0 {
+		b.WriteString(dimStyle.Render("tools_used: " + strings.Join(m.latestTools, ", ")))
+		b.WriteString("\n")
+	} else {
+		b.WriteString(dimStyle.Render("tools_used: -"))
+		b.WriteString("\n")
+	}
+	if status := m.statusLine(); status != "" {
+		b.WriteString(status)
+		b.WriteString("\n")
+	}
+	b.WriteString(helpStyle.Render("Enter: send  Esc: projects  Ctrl+S: session  Ctrl+R: health  Ctrl+L: clear  Ctrl+C: quit"))
+	b.WriteString("\n")
+	b.WriteString(m.chatFooter())
 	return b.String()
+}
+
+func (m model) chatFooter() string {
+	health := string(m.selected.Status)
+	if m.selected.Status == StatusOnline {
+		health = fmt.Sprintf("online pid=%d", m.selected.Health.PID)
+	}
+	return dimStyle.Render(fmt.Sprintf("root: %s  session: %s  gateway: %s", m.selected.Path, m.selected.SessionKey, health))
 }
 
 func (m model) renderChatLog(maxLines int) string {
@@ -479,6 +484,56 @@ func (m model) renderChatLog(maxLines int) string {
 		lines = lines[len(lines)-maxLines:]
 	}
 	return strings.Join(lines, "\n") + "\n"
+}
+
+func renderChatHeader(p ProjectView) string {
+	health := string(p.Status)
+	if p.Status == StatusOnline {
+		health = fmt.Sprintf("online pid=%d", p.Health.PID)
+	}
+
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("clawlet tui — chat"))
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("project: %s\n", p.Path))
+	b.WriteString(fmt.Sprintf("session: %s  gateway: %s", p.SessionKey, renderStatusText(p.Status, health)))
+	return b.String()
+}
+
+func renderTranscriptMessage(msg chatMessage, tools []string) string {
+	role := strings.TrimSpace(msg.Role)
+	if role == "" {
+		role = "system"
+	}
+	content := strings.TrimSpace(msg.Content)
+	if content == "" {
+		content = "(empty)"
+	}
+
+	label := "[" + role + "]"
+	switch role {
+	case "user":
+		label = userStyle.Render(label)
+	case "assistant":
+		label = agentStyle.Render(label)
+	default:
+		label = systemStyle.Render(label)
+	}
+
+	var b strings.Builder
+	b.WriteString(label)
+	b.WriteString("\n")
+	for _, line := range strings.Split(content, "\n") {
+		b.WriteString("  ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	if len(tools) > 0 {
+		b.WriteString(dimStyle.Render("  tools_used: "))
+		b.WriteString(dimStyle.Render(strings.Join(tools, ", ")))
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func (m model) statusLine() string {

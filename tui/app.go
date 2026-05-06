@@ -11,7 +11,7 @@ func Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	program := tea.NewProgram(newModel(st), tea.WithAltScreen(), tea.WithContext(ctx))
+	program := tea.NewProgram(newModel(st), tea.WithContext(ctx))
 	_, err = program.Run()
 	return err
 }

@@ -473,12 +473,17 @@ clawlet gateway --dir /path/to/project
 
 表示項目：
 
-- project path
-- session key
-- Gateway status / pid
-- 会話ログ
-- message 入力欄
+- session 選択時に一度だけ出力される chat header
+  - project path
+  - session key
+  - Gateway status / pid
+- terminal / tmux scrollback に流れる会話 transcript
+- 履歴直下の message 入力欄
 - latest response の `tools_used`
+- 画面最下部の footer
+  - project root
+  - session key
+  - Gateway status / pid
 
 操作：
 
@@ -784,6 +789,14 @@ clawlet tui
   - `Ctrl+R`: health 再取得
   - `Ctrl+L`: 画面クリア
   - `Ctrl+C`: 終了
+- Chat 画面の tmux scrollback 向け UX を改善
+  - Bubble Tea の alt screen を使わず、terminal / tmux の通常 scrollback に transcript を残す
+  - user / assistant / system message を `tea.Println` で unmanaged output として流す
+  - transcript の role label (`[user]`, `[assistant]`, `[system]`) を色付き表示
+  - chat header (`clawlet tui — chat`, project, session, gateway) は session 選択時に一度だけ出力
+  - 操作ヘルプは header 側には出さず、下部パネル側にのみ表示
+  - 下部パネルは履歴直下に `message >` を置き、最下部 footer に root / session / gateway を表示
+  - `Ctrl+L` は下部パネルの preview を clear するが、terminal / tmux scrollback は保持する
 
 確認済み：
 

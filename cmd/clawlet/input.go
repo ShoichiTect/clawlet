@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/term"
@@ -212,18 +213,60 @@ func (s *inputState) deletePrevWord() {
 	}
 }
 
-// cursorPos returns (line, col) for a given buffer position.
-// Line 0 is the first line, col counts from 0 at the *text start* of that line
-// (prompt/cont length not included).
+// runeDisplayWidth returns the terminal display width of a rune.
+// CJK and other wide characters occupy 2 columns; most others occupy 1.
+func runeDisplayWidth(r rune) int {
+	if r < 0x20 || r == 0x7F {
+		return 0 // control characters
+	}
+	if r < 0x80 {
+		return 1 // ASCII
+	}
+	// Halfwidth Katakana and halfwidth punctuation (narrow)
+	if r >= 0xFF61 && r <= 0xFFDC || r >= 0xFFE8 && r <= 0xFFEE {
+		return 1
+	}
+	// Fullwidth forms
+	if r >= 0xFF01 && r <= 0xFF60 || r >= 0xFFE0 && r <= 0xFFE6 {
+		return 2
+	}
+	// CJK punctuation and symbols
+	if r >= 0x3000 && r <= 0x303F || r >= 0xFE30 && r <= 0xFE4F {
+		return 2
+	}
+	// Unicode script-based wide characters
+	if unicode.Is(unicode.Han, r) ||
+		unicode.Is(unicode.Hiragana, r) ||
+		unicode.Is(unicode.Katakana, r) ||
+		unicode.Is(unicode.Hangul, r) {
+		return 2
+	}
+	return 1
+}
+
+// cursorPos returns (line, col) for a given buffer position using rune count.
+// Used for buffer navigation (moveUp/moveDown).
 func (s *inputState) cursorPos(pos int) (line, col int) {
-	col = 0
-	line = 0
 	for i := 0; i < pos; i++ {
 		if s.buffer[i] == '\n' {
 			line++
 			col = 0
 		} else {
 			col++
+		}
+	}
+	return
+}
+
+// displayPos returns (line, displayCol) for a given buffer position.
+// displayCol accounts for CJK/fullwidth characters occupying 2 terminal columns.
+func (s *inputState) displayPos(pos int) (line, col int) {
+	for i := 0; i < pos; i++ {
+		if s.buffer[i] == '\n' {
+			line++
+			col = 0
+		} else {
+			col += runeDisplayWidth(s.buffer[i])
 		}
 	}
 	return
@@ -378,8 +421,9 @@ func (s *inputState) render() {
 	}
 
 	// Compute where the cursor should be relative to the end of buffer.
-	curLine, curCol := s.cursorPos(s.cursor)
-	endLine, _ := s.cursorPos(len(s.buffer))
+	// Use displayPos so CJK/fullwidth chars are counted as 2 columns.
+	curLine, curCol := s.displayPos(s.cursor)
+	endLine, _ := s.displayPos(len(s.buffer))
 
 	// Move from end-of-buffer position back to cursor position.
 	if endLine > curLine {

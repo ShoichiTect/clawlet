@@ -384,8 +384,433 @@ go install ./cmd/clawlet
 - heartbeat は維持し、Gateway loop の `heartbeat` session を使って実行する。
 - cron CLI は外部チャンネル送信を行わず、Gateway 内部の agent turn として実行する。
 
-### Phase 2：TUI 連携 — 未着手
+### Phase 2：TUI 連携 — 要件定義中
 
 - TUI 側の socket discovery
 - マルチプロジェクト UI
-- ツール実行のリアルタイム表示
+- Gateway 経由の chat UI
+- ツール実行のリアルタイム表示（MVP 後）
+
+---
+
+## 9. Phase 2：TUI 要件定義
+
+### 9.1 方針
+
+clawlet v2 の TUI は、外部チャンネル Discord / Slack / Telegram / WhatsApp の代替として、ローカルマシン上の複数プロジェクトに対して安全に接続し、会話・セッション・Gateway 状態を操作できる UI とする。
+
+TUI は Gateway と Unix domain socket HTTP で通信する。TCP port は開けず、既存の v2 Gateway API を利用する。
+
+### 9.2 採用方針
+
+| 項目 | 方針 |
+|---|---|
+| 起動コマンド | `clawlet tui` |
+| Gateway 起動 | MVP では自動起動しない。ユーザーが `clawlet gateway --dir <project>` を手動起動する |
+| Project list 保存先 | `~/.clawlet/tui/projects.json` |
+| TUI ライブラリ | Bubble Tea |
+| package 構成 | `cmd/clawlet/cmd_tui.go` + `tui/` |
+| 依存追加 | Bubble Tea は Phase 2 実装開始時に追加する |
+| MVP 到達点 | project 一覧 → Gateway online project 選択 → message 送信 → assistant response 表示 |
+
+### 9.3 MVP スコープ
+
+#### 必須機能
+
+- `clawlet tui` コマンドで起動する
+- Project 一覧を表示する
+- Project ごとに `{dir}/.clawlet/gateway.sock` を検出する
+- `GET /api/health` で Gateway の online / offline を判定する
+- Gateway online な project を選択して chat 画面に遷移する
+- `POST /api/chat` で message を送信する
+- assistant response の `content` を表示する
+- response の `tools_used` を表示する
+- session key を指定できる
+- Gateway offline / stale socket / timeout / API error を分かりやすく表示する
+
+#### MVP では扱わないもの
+
+- Gateway の自動起動
+- 複数 Gateway への同時接続
+- ツール実行のリアルタイムストリーミング
+- セッション履歴の高度な検索
+- cron / heartbeat の管理 UI
+- config.json の編集 UI
+
+### 9.4 画面要件
+
+#### Project List 画面
+
+表示項目：
+
+- project path
+- Gateway status
+  - `online`
+  - `offline`
+  - `stale socket`
+  - `error`
+- Gateway pid（online 時）
+- workspace path（health response 由来）
+- active session key
+
+操作：
+
+| 操作 | 内容 |
+|---|---|
+| `Enter` | 選択中 project に接続 |
+| `r` | 再スキャン |
+| `a` | project path を手入力して追加 |
+| `d` | project list から削除 |
+| `q` | 終了 |
+
+Gateway offline の project を選択した場合は、起動コマンドを表示する。
+
+```bash
+clawlet gateway --dir /path/to/project
+```
+
+#### Chat 画面
+
+表示項目：
+
+- project path
+- session key
+- Gateway status / pid
+- 会話ログ
+- message 入力欄
+- latest response の `tools_used`
+
+操作：
+
+| 操作 | 内容 |
+|---|---|
+| `Enter` | message 送信 |
+| `Esc` | Project List に戻る |
+| `Ctrl+S` | session key を変更 |
+| `Ctrl+R` | health を再取得 |
+| `Ctrl+L` | 画面クリア |
+| `Ctrl+C` | 終了 |
+
+### 9.5 Project discovery
+
+TUI は以下の候補から project を発見する。
+
+1. `~/.clawlet/tui/projects.json` に保存された project path
+2. 現在の working directory
+3. `~/.clawlet/workspace`
+4. ユーザーが手入力で追加した path
+
+Gateway socket path：
+
+```text
+{workspace}/.clawlet/gateway.sock
+```
+
+Health check：
+
+```http
+GET /api/health
+```
+
+Response：
+
+```json
+{
+  "status": "ok",
+  "workspace": "/Users/vps/dev/proj-a",
+  "pid": 12345
+}
+```
+
+### 9.6 TUI state
+
+Project list は TUI 専用 state として保存する。
+
+```text
+~/.clawlet/tui/projects.json
+```
+
+初期構造：
+
+```json
+{
+  "projects": [
+    {
+      "path": "/Users/vps/dev/proj-a",
+      "session_key": "default",
+      "last_opened_at": "2026-05-06T00:00:00Z"
+    }
+  ]
+}
+```
+
+- `path` は絶対パスで保存する
+- `session_key` は project ごとの最後に使った session key
+- `last_opened_at` は並び替えや最近使った project 表示に使う
+
+### 9.7 Chat API
+
+既存 Gateway API を使用する。
+
+```http
+POST /api/chat
+Content-Type: application/json
+```
+
+Request：
+
+```json
+{
+  "message": "hello",
+  "session_key": "default"
+}
+```
+
+Response：
+
+```json
+{
+  "content": "...",
+  "tools_used": ["read_file", "exec"]
+}
+```
+
+TUI は原則として `session_key` を明示的に送る。
+
+### 9.8 非機能要件
+
+- Unix domain socket のみを使う
+- TCP port は開けない
+- health check には短い timeout を設定する
+- chat request 中は loading 表示を出す
+- offline / stale socket / timeout を UI 上で区別する
+- stale socket は削除せず、ユーザーに状態として表示する
+- Windows 対応は MVP 範囲外とする
+
+### 9.9 将来拡張
+
+#### Streaming / リアルタイム表示
+
+ツール実行や assistant delta をリアルタイム表示する場合は、Gateway API の拡張が必要。
+
+候補：
+
+```http
+POST /api/chat/stream
+```
+
+イベント例：
+
+```json
+{"type":"assistant_delta","content":"..."}
+{"type":"tool_start","name":"read_file","input":{}}
+{"type":"tool_end","name":"read_file","output_summary":"..."}
+{"type":"done","content":"..."}
+```
+
+#### Gateway 自動起動
+
+MVP 後に、offline project に対して TUI から Gateway を起動できるようにする余地を残す。
+
+```bash
+clawlet gateway --dir <project>
+```
+
+### 9.10 実装計画
+
+Phase 2 MVP は以下の順序で実装する。
+
+#### Step 2.1：`clawlet tui` コマンド追加
+
+- `cmd/clawlet/cmd_tui.go` を追加する
+- `cmd/clawlet/main.go` に `tui` command を登録する
+- 実処理は `tui/` package に委譲する
+
+想定構成：
+
+```text
+cmd/clawlet/cmd_tui.go
+
+tui/
+├── app.go              # Bubble Tea program 起動
+├── state.go            # ~/.clawlet/tui/projects.json 読み書き
+├── client.go           # Unix socket HTTP client
+├── project.go          # project discovery / health model
+├── model_project.go    # Project List 画面
+└── model_chat.go       # Chat 画面
+```
+
+#### Step 2.2：Bubble Tea 依存追加
+
+Phase 2 実装開始時に Bubble Tea を追加する。
+
+```bash
+go get github.com/charmbracelet/bubbletea@latest
+```
+
+必要に応じて、入力欄や viewport のために Charmbracelet 系 package を追加する。
+
+候補：
+
+```bash
+go get github.com/charmbracelet/bubbles@latest
+go get github.com/charmbracelet/lipgloss@latest
+```
+
+依存追加後は以下を確認する。
+
+```bash
+go mod tidy
+go test ./...
+```
+
+#### Step 2.3：TUI state 読み書き
+
+- `~/.clawlet/tui/projects.json` を読み書きする
+- ファイルが存在しない場合は空 state として扱う
+- project path は絶対パスに正規化して保存する
+- `session_key` 未設定時は `default` を使う
+- `last_opened_at` を更新する
+
+#### Step 2.4：Unix socket client 実装
+
+- `{workspace}/.clawlet/gateway.sock` に対する HTTP client を実装する
+- `GET /api/health` を呼び出す
+- `POST /api/chat` を呼び出す
+- timeout を設定する
+- offline / stale socket / timeout / API error を区別して返す
+
+#### Step 2.5：Project List model 実装
+
+- state / cwd / `~/.clawlet/workspace` から project 候補を集める
+- health check により Gateway status を表示する
+- `Enter` で online project の Chat 画面へ遷移する
+- `r` で再スキャンする
+- `a` で project を追加する
+- `d` で project を削除する
+- `q` で終了する
+
+#### Step 2.6：Chat model 実装
+
+- message 入力欄を表示する
+- `Enter` で `/api/chat` に送信する
+- assistant response の `content` を会話ログに追加する
+- `tools_used` を latest tools として表示する
+- `Esc` で Project List に戻る
+- `Ctrl+S` で session key を変更する
+- `Ctrl+R` で health を再取得する
+- `Ctrl+L` で画面をクリアする
+
+#### Step 2.7：検証
+
+以下を成功条件とする。
+
+```bash
+go test ./...
+go vet ./...
+go install ./cmd/clawlet
+```
+
+手動確認：
+
+```bash
+clawlet gateway --dir /path/to/project
+clawlet tui
+```
+
+期待動作：
+
+1. Project List に `/path/to/project` が online として表示される
+2. Project を選択して Chat 画面に遷移できる
+3. message を送信できる
+4. assistant response と tools_used が表示される
+5. TUI を再起動しても `~/.clawlet/tui/projects.json` から project が復元される
+
+### 9.11 実装進捗（2026-05-06）
+
+#### Phase 2 MVP — 初期実装済み
+
+完了項目：
+
+- `clawlet tui` コマンドを追加
+  - `cmd/clawlet/cmd_tui.go`
+  - `cmd/clawlet/main.go` に command 登録
+- Bubble Tea ベースの TUI package を追加
+  - `tui/app.go`: Bubble Tea program 起動
+  - `tui/state.go`: `~/.clawlet/tui/projects.json` 読み書き
+  - `tui/client.go`: Unix domain socket HTTP client
+  - `tui/project.go`: project discovery / health model
+  - `tui/model.go`: Project List / Chat 画面の Bubble Tea model
+- Charmbracelet 依存を追加
+  - `github.com/charmbracelet/bubbletea v1.3.10`
+  - `github.com/charmbracelet/bubbles v1.0.0`
+  - `github.com/charmbracelet/lipgloss v1.1.0`
+- TUI state を実装
+  - 保存先: `~/.clawlet/tui/projects.json`
+  - `path` を絶対パスに正規化
+  - project ごとに `session_key` と `last_opened_at` を保持
+  - `session_key` 未設定時は `default`
+- Project discovery を実装
+  - state に保存済みの project
+  - current working directory
+  - `~/.clawlet/workspace`
+  - ユーザー入力で追加した path
+- Gateway health check を実装
+  - `{workspace}/.clawlet/gateway.sock` を検出
+  - `GET /api/health` を呼び出し
+  - `online`, `offline`, `stale socket`, `timeout`, `error` を区別
+  - stale socket は削除せず状態表示のみ
+- Chat API client を実装
+  - `POST /api/chat`
+  - request で `session_key` を明示送信
+  - response の `content` / `tools_used` を表示
+  - chat request 中は loading 表示
+- Project List 画面を実装
+  - project path / Gateway status / pid / workspace / active session key を表示
+  - `Enter`: online project に接続
+  - `r`: 再スキャン
+  - `a`: project path を入力して追加
+  - `d`: project list から削除
+  - `q`: 終了
+  - offline project 選択時は `clawlet gateway --dir <project>` を表示
+- Chat 画面を実装
+  - project path / session key / Gateway status / pid を表示
+  - conversation log を表示
+  - message input を表示
+  - latest `tools_used` を表示
+  - `Enter`: message 送信
+  - `Esc`: Project List に戻る
+  - `Ctrl+S`: session key 変更
+  - `Ctrl+R`: health 再取得
+  - `Ctrl+L`: 画面クリア
+  - `Ctrl+C`: 終了
+
+確認済み：
+
+```bash
+go test ./...
+go vet ./...
+go install ./cmd/clawlet
+```
+
+手動確認：
+
+```bash
+clawlet gateway --dir /Users/vps/dev/my-hobby/clawlet
+clawlet tui
+```
+
+- Project List で `/Users/vps/dev/my-hobby/clawlet` が online として表示されることを確認
+- Project を選択して Chat 画面に遷移できることを確認
+- message を送信して assistant response / `tools_used` が表示されることを確認
+- project session が `.clawlet/sessions/default.jsonl` に保存されることを確認
+
+#### 未実装 / MVP 後に残す項目
+
+- session 一覧 UI / session 作成・削除 UI
+- session 履歴の読み込み表示
+- 複数 Gateway への同時接続
+- Gateway 自動起動
+- tool execution / assistant delta の streaming 表示
+- cron / heartbeat 管理 UI
+- config.json 編集 UI

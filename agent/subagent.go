@@ -61,16 +61,16 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not men
 
 func (m *SubagentManager) runSubagent(ctx context.Context, task string) (string, error) {
 	l := m.loop
-	if l == nil || l.llm == nil || l.cfg == nil {
+	if l == nil || l.runner == nil || l.runner.LLM == nil || l.cfg == nil {
 		return "", fmt.Errorf("subagent loop not configured")
 	}
 
 	// Subagent tools: a restricted subset (no message, no spawn, no cron).
 	treg := &tools.Registry{
-		WorkspaceDir:        l.workspace,
+		WorkspaceDir:        l.runner.Workspace,
 		RestrictToWorkspace: l.cfg.Tools.RestrictToWorkspaceValue(),
-		ExecTimeout:         l.tools.ExecTimeout,
-		BraveAPIKey:         l.tools.BraveAPIKey,
+		ExecTimeout:         l.runner.Tools.ExecTimeout,
+		BraveAPIKey:         l.runner.Tools.BraveAPIKey,
 		AllowTools: []string{
 			"read_file",
 			"write_file",
@@ -81,7 +81,7 @@ func (m *SubagentManager) runSubagent(ctx context.Context, task string) (string,
 		},
 	}
 
-	system := buildSubagentPrompt(l.workspace, task)
+	system := buildSubagentPrompt(l.runner.Workspace, task)
 	messages := []llm.Message{
 		{Role: "system", Content: system},
 		{Role: "user", Content: task},
@@ -92,7 +92,7 @@ func (m *SubagentManager) runSubagent(ctx context.Context, task string) (string,
 	const maxIters = 15
 	var final string
 	for range maxIters {
-		res, err := l.llm.Chat(ctx, messages, toolsDefs)
+		res, err := l.runner.LLM.Chat(ctx, messages, toolsDefs)
 		if err != nil {
 			return "", err
 		}

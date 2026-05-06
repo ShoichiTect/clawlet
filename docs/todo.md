@@ -49,6 +49,15 @@ This causes behavior drift and duplicated maintenance work.
 
 Do not copy PicoClaw's full loop complexity. Only borrow the idea that turn execution should be centralized.
 
+### Status: ✅ DONE (2026-05-06)
+
+- Extracted `TurnRunner` in `agent/turn.go` — shared turn execution used by both CLI (`Agent`) and gateway (`Loop`).
+- Extracted `BuildSystemPrompt` in `agent/prompt.go` — shared system-prompt builder with mode-specific `PromptOpts`.
+- `ToolEvent` / `TurnObserver` / `ToolPhase` types moved to `agent/turn.go`.
+- `agent/agent.go` (185 lines) and `agent/loop.go` (280 lines) are now thin wrappers delegating to `TurnRunner.Run()`.
+- Added `agent/turn_test.go` with 10 tests covering turn execution, prompt building, observer events, and max-iters limits.
+- TurnRunner mutates session in-memory; callers handle persistence (CLI uses `session.Save`, gateway uses `sessions.Save`).
+
 ## Priority 2: Add Structured Events And An Event Bus
 
 ### Problem
@@ -57,12 +66,13 @@ Do not copy PicoClaw's full loop complexity. Only borrow the idea that turn exec
 
 ### Current Clawlet References
 
+- `agent/turn.go`
 - `agent/agent.go`
 - `agent/loop.go`
 
 ### Evidence
 
-- Tool-call logging is a direct `fmt.Fprintf` in `agent/agent.go`.
+- Tool-call logging is a direct `fmt.Fprintf` in `cmd/clawlet/cmd_agent.go` via `TurnObserver`.
 - Gateway verbose mode does not emit comparable per-step events.
 - There is no structured runtime event type that UI, logs, and tests can all consume.
 
@@ -103,8 +113,7 @@ This is the single highest-leverage improvement for future maintainability.
 
 - `tools/registry.go`
 - `session/session.go`
-- `agent/agent.go`
-- `agent/loop.go`
+- `agent/turn.go`
 
 ### Evidence
 
@@ -350,7 +359,7 @@ Borrow the capability idea, not the full manager complexity.
 
 ### Gaps
 
-- No strong shared-turn execution test coverage for the actual agent loop.
+- ✅ Shared turn runner test coverage added in `agent/turn_test.go` (10 tests).
 - Weak coverage for CLI provider flows.
 - Weak coverage for future event emission and trace behavior.
 
@@ -385,11 +394,11 @@ PicoClaw is much more test-heavy. The key takeaway is not test count, but protec
 
 ### Current Clawlet Hotspots
 
-- `agent/agent.go`
-- `agent/loop.go`
 - `tools/registry.go`
 - `cmd/clawlet/config.go`
 - `config/config.go`
+
+Note: `agent/agent.go` and `agent/loop.go` were slimmed down in Priority 1; turn execution is centralized in `agent/turn.go` (149 lines).
 
 ### Proposal
 
@@ -414,13 +423,13 @@ The right goal is not to turn `clawlet` into PicoClaw. The right goal is to adop
 
 ## Recommended Execution Order
 
-1. Extract a shared turn runner.
+1. ✅ Extract a shared turn runner. (done: `agent/turn.go`, `agent/prompt.go`)
 2. Add a minimal event model and event bus.
 3. Route `--verbose` through event subscriptions.
 4. Add tool execution trace payloads.
 5. Add `agent --model` and better provider commands.
 6. Surface persistence failures.
-7. Add shared-turn and event-focused tests.
+7. Add shared-turn and event-focused tests. (partial: `agent/turn_test.go` covers turn execution)
 8. Build a minimal TUI on top of events.
 9. Add optional channel capabilities only when the TUI or channel UX needs them.
 

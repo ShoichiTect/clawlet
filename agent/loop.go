@@ -20,19 +20,16 @@ import (
 	"github.com/mosaxiv/clawlet/tools"
 )
 
+// Loop runs the gateway agent loop, consuming inbound messages and producing outbound replies.
 type Loop struct {
-	cfg          *config.Config
-	workspace    string
-	model        string
-	maxIters     int
-	memoryWindow int
+	cfg   *config.Config
+	model string
+
+	runner *TurnRunner
 
 	bus      *bus.Bus
 	sessions *session.Manager
 	skills   *skills.Loader
-
-	llm   *llm.Client
-	tools *tools.Registry
 
 	cron *cron.Service
 
@@ -41,6 +38,7 @@ type Loop struct {
 	consolidationInFlight sync.Map
 }
 
+// LoopOptions configures a gateway Loop.
 type LoopOptions struct {
 	Config       *config.Config
 	WorkspaceDir string
@@ -54,6 +52,7 @@ type LoopOptions struct {
 	Verbose      bool
 }
 
+// NewLoop creates a gateway Loop.
 func NewLoop(opts LoopOptions) (*Loop, error) {
 	if opts.Config == nil {
 		return nil, fmt.Errorf("config is nil")
@@ -124,29 +123,39 @@ func NewLoop(opts LoopOptions) (*Loop, error) {
 	}
 	treg.MemorySearch = memMgr
 
+	runner := &TurnRunner{
+		LLM:                 client,
+		Tools:               treg,
+		Workspace:           ws,
+		MaxIters:            opts.MaxIters,
+		MemoryWindow:        memoryWindow,
+		RestrictToWorkspace: opts.Config.Tools.RestrictToWorkspaceValue(),
+		SkillsLoader:        sloader,
+		Observer:            nil, // gateway does not use ToolObserver yet
+		IncludeRuntime:      false,
+	}
+
 	return &Loop{
-		cfg:          opts.Config,
-		workspace:    ws,
-		model:        model,
-		maxIters:     opts.MaxIters,
-		memoryWindow: memoryWindow,
-		bus:          opts.Bus,
-		sessions:     smgr,
-		skills:       sloader,
-		llm:          client,
-		tools:        treg,
-		cron:         opts.Cron,
-		verbose:      opts.Verbose,
+		cfg:     opts.Config,
+		model:   model,
+		runner:  runner,
+		bus:     opts.Bus,
+		sessions: smgr,
+		skills:  sloader,
+		cron:    opts.Cron,
+		verbose: opts.Verbose,
 	}, nil
 }
 
+// SetSpawn replaces the Spawn callback on the tool registry.
 func (l *Loop) SetSpawn(fn func(ctx context.Context, task, label, originChannel, originChatID string) (string, error)) {
-	if l == nil || l.tools == nil {
+	if l == nil || l.runner == nil || l.runner.Tools == nil {
 		return
 	}
-	l.tools.Spawn = fn
+	l.runner.Tools.Spawn = fn
 }
 
+// Run starts the main consume loop. Blocks until the context is cancelled.
 func (l *Loop) Run(ctx context.Context) error {
 	for {
 		msg, err := l.bus.ConsumeInbound(ctx)
@@ -156,7 +165,6 @@ func (l *Loop) Run(ctx context.Context) error {
 		out, omsg, err := l.processInbound(ctx, msg)
 		_ = out
 		if err != nil {
-			// Best-effort error reply
 			if omsg.Channel != "" && omsg.ChatID != "" {
 				omsg.Content = "error: " + err.Error()
 				_ = l.bus.PublishOutbound(ctx, omsg)
@@ -169,6 +177,7 @@ func (l *Loop) Run(ctx context.Context) error {
 	}
 }
 
+// ProcessDirect executes a single turn synchronously for the given session/channel/chatID.
 func (l *Loop) ProcessDirect(ctx context.Context, content, sessionKey, channel, chatID string) (string, error) {
 	userText := strings.TrimSpace(content)
 	return l.processDirect(ctx, llm.Message{Role: "user", Content: content}, userText, sessionKey, channel, chatID)
@@ -182,7 +191,6 @@ func (l *Loop) processInbound(ctx context.Context, msg bus.InboundMessage) (stri
 			originCh = "cli"
 			originChat = msg.ChatID
 		}
-		// Route response back to origin session.
 		sk := originCh + ":" + originChat
 		res, err := l.processDirect(ctx, llm.Message{Role: "user", Content: msg.Content}, msg.Content, sk, originCh, originChat)
 		return res, bus.OutboundMessage{Channel: originCh, ChatID: originChat, Content: res}, err
@@ -192,7 +200,7 @@ func (l *Loop) processInbound(ctx context.Context, msg bus.InboundMessage) (stri
 	if strings.TrimSpace(sessionKey) == "" {
 		sessionKey = msg.Channel + ":" + msg.ChatID
 	}
-	userInput, err := media.PrepareInbound(ctx, l.llm, l.cfg.Tools.Media, msg)
+	userInput, err := media.PrepareInbound(ctx, l.runner.LLM, l.cfg.Tools.Media, msg)
 	if err != nil {
 		return "", bus.OutboundMessage{}, err
 	}
@@ -216,59 +224,25 @@ func (l *Loop) processDirect(ctx context.Context, userMessage llm.Message, sessi
 	}
 	l.scheduleConsolidation(sessionKey, sess)
 
-	history := sess.History(l.memoryWindow)
-	messages := make([]llm.Message, 0, 1+len(history)+1)
-	system := l.buildSystemPrompt(channel, chatID)
-	messages = append(messages, llm.Message{Role: "system", Content: system})
-	for _, m := range history {
-		messages = append(messages, llm.Message{Role: m.Role, Content: m.Content})
-	}
-	messages = append(messages, userMessage)
-
-	toolsDefs := l.tools.Definitions()
-
-	var final string
-	toolsUsed := make([]string, 0, 8)
-	for iter := 0; iter < l.maxIters; iter++ {
-		res, err := l.llm.Chat(ctx, messages, toolsDefs)
-		if err != nil {
-			return "", err
-		}
-		if res.HasToolCalls() {
-			for _, tc := range res.ToolCalls {
-				toolsUsed = append(toolsUsed, tc.Name)
-			}
-			messages = appendToolRound(messages, res.Content, res.ToolCalls, func(tc llm.ToolCall) string {
-				out, err := l.tools.Execute(ctx, tools.Context{
-					Channel:    channel,
-					ChatID:     chatID,
-					SessionKey: sessionKey,
-				}, tc.Name, tc.Arguments)
-				if err != nil {
-					return "error: " + err.Error()
-				}
-				return out
-			})
-			continue
-		}
-		final = res.Content
-		break
-	}
-	if strings.TrimSpace(final) == "" {
-		final = "(no response)"
+	out, err := l.runner.Run(ctx, TurnInput{
+		UserMessage:     userMessage,
+		SessionUserText: sessionUserText,
+		Channel:         channel,
+		ChatID:          chatID,
+	}, sess)
+	if err != nil {
+		return "", err
 	}
 
-	sess.Add("user", sessionUserText)
-	sess.AddWithTools("assistant", final, toolsUsed)
 	_ = l.sessions.Save(sess)
-	return final, nil
+	return out.Final, nil
 }
 
 func (l *Loop) scheduleConsolidation(sessionKey string, sess *session.Session) {
 	if l == nil || sess == nil {
 		return
 	}
-	if !sess.NeedsConsolidation(l.memoryWindow) {
+	if !sess.NeedsConsolidation(l.runner.MemoryWindow) {
 		return
 	}
 	if _, loaded := l.consolidationInFlight.LoadOrStore(sessionKey, struct{}{}); loaded {
@@ -280,8 +254,8 @@ func (l *Loop) scheduleConsolidation(sessionKey string, sess *session.Session) {
 		cctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
-		done, err := maybeConsolidateSession(cctx, l.workspace, sess, l.memoryWindow, func(ctx context.Context, currentMemory, conversation string) (string, string, error) {
-			return summarizeConsolidationWithLLM(ctx, l.llm, currentMemory, conversation)
+		done, err := maybeConsolidateSession(cctx, l.runner.Workspace, sess, l.runner.MemoryWindow, func(ctx context.Context, currentMemory, conversation string) (string, string, error) {
+			return summarizeConsolidationWithLLM(ctx, l.runner.LLM, currentMemory, conversation)
 		})
 		if err != nil {
 			if l.verbose {
@@ -296,60 +270,6 @@ func (l *Loop) scheduleConsolidation(sessionKey string, sess *session.Session) {
 			fmt.Fprintf(os.Stderr, "consolidation save error (%s): %v\n", sessionKey, err)
 		}
 	}()
-}
-
-func (l *Loop) buildSystemPrompt(channel, chatID string) string {
-	// Keep it simple and deterministic. Add progressive skill summary.
-	var b strings.Builder
-	b.WriteString("# clawlet\n\n")
-	b.WriteString("You are clawlet, a helpful AI assistant.\n")
-	b.WriteString("You can use tools to read/write/edit files, list directories, execute shell commands, fetch/search the web, schedule tasks, and spawn background subagents.\n\n")
-	b.WriteString("IMPORTANT: When replying to the current conversation, respond with plain text. Do not call the message tool.\n")
-	b.WriteString("Only use the message tool when you must send to a different channel/chat_id.\n\n")
-	b.WriteString("## Current Time\n")
-	b.WriteString(time.Now().Format("2006-01-02 15:04 (Mon)") + "\n\n")
-	b.WriteString("## Workspace\n")
-	b.WriteString(l.workspace + "\n\n")
-	if l.cfg.Tools.RestrictToWorkspaceValue() {
-		b.WriteString("## Safety\nTools are restricted to the workspace directory.\n\n")
-	}
-	if channel != "" && chatID != "" {
-		b.WriteString("## Current Session\n")
-		b.WriteString("Channel: " + channel + "\nChat ID: " + chatID + "\n\n")
-	}
-
-	// Bootstrap files from workspace (optional).
-	for _, fn := range []string{"AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"} {
-		p := filepath.Join(l.workspace, fn)
-		if bb, err := os.ReadFile(p); err == nil && len(bb) > 0 {
-			b.WriteString("## " + fn + "\n\n")
-			b.Write(bb)
-			if bb[len(bb)-1] != '\n' {
-				b.WriteString("\n")
-			}
-			b.WriteString("\n")
-		}
-	}
-
-	// Memory (long-term + today's notes)
-	mem := memory.New(l.workspace).GetContext()
-	if strings.TrimSpace(mem) != "" {
-		b.WriteString("# Memory\n\n")
-		b.WriteString(mem)
-		b.WriteString("\n\n")
-	}
-
-	// Skills summary (progressive loading).
-	if l.skills != nil {
-		sum := l.skills.SummaryXML()
-		if sum != "" {
-			b.WriteString("# Skills\n\n")
-			b.WriteString("To use a skill:\n- workspace skills: read_file(path)\n- bundled skills: read_skill(name)\n\n")
-			b.WriteString(sum + "\n\n")
-		}
-	}
-
-	return b.String()
 }
 
 func parseOrigin(chatID string) (string, string) {

@@ -2,11 +2,9 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +18,7 @@ import (
 	"github.com/mosaxiv/clawlet/tools"
 )
 
+// Options configures a CLI-mode Agent.
 type Options struct {
 	Config       *config.Config
 	WorkspaceDir string
@@ -29,40 +28,21 @@ type Options struct {
 	ToolObserver func(ToolEvent)
 }
 
-type ToolPhase int
-
-const (
-	ToolStart ToolPhase = iota
-	ToolEnd
-)
-
-type ToolEvent struct {
-	Phase    ToolPhase
-	Name     string
-	Args     string
-	Output   string
-	Error    string
-	Duration time.Duration
-}
-
+// Agent runs in CLI mode (single-session, interactive or one-shot).
 type Agent struct {
-	cfg          *config.Config
-	workspace    string
-	maxIters     int
-	memoryWindow int
-	verbose      bool
+	cfg     *config.Config
+	verbose bool
 
-	llm   *llm.Client
-	tools *tools.Registry
+	runner *TurnRunner
 
-	sessionDir   string
-	sess         *session.Session
-	toolObserver func(ToolEvent)
+	sessionDir string
+	sess       *session.Session
 
 	consolidationMu      sync.Mutex
 	consolidationRunning bool
 }
 
+// New creates a CLI-mode Agent.
 func New(opts Options) (*Agent, error) {
 	if opts.Config == nil {
 		return nil, fmt.Errorf("config is nil")
@@ -110,7 +90,6 @@ func New(opts Options) (*Agent, error) {
 		WebFetchMaxResponse:    opts.Config.Tools.Web.MaxResponseBytes,
 		WebFetchTimeout:        time.Duration(opts.Config.Tools.Web.FetchTimeoutSec) * time.Second,
 		ReadSkill: func(name string) (string, bool) {
-			// CLI agent doesn't have a skills loader; use the embedded loader via workspace.
 			l := skills.New(wsAbs)
 			return l.Load(name)
 		},
@@ -122,93 +101,50 @@ func New(opts Options) (*Agent, error) {
 	}
 	treg.MemorySearch = memMgr
 
+	runner := &TurnRunner{
+		LLM:                 c,
+		Tools:               treg,
+		Workspace:           wsAbs,
+		MaxIters:            opts.MaxIters,
+		MemoryWindow:        opts.Config.Agents.Defaults.MemoryWindowValue(),
+		RestrictToWorkspace: opts.Config.Tools.RestrictToWorkspaceValue(),
+		SkillsLoader:        nil, // CLI does not show skills in prompt
+		Observer:            opts.ToolObserver,
+		IncludeRuntime:      true,
+	}
+
 	return &Agent{
-		cfg:          opts.Config,
-		workspace:    wsAbs,
-		maxIters:     opts.MaxIters,
-		memoryWindow: opts.Config.Agents.Defaults.MemoryWindowValue(),
-		verbose:      opts.Verbose,
-		llm:          c,
-		tools:        treg,
-		sessionDir:   sdir,
-		sess:         sess,
-		toolObserver: opts.ToolObserver,
+		cfg:        opts.Config,
+		verbose:    opts.Verbose,
+		runner:     runner,
+		sessionDir: sdir,
+		sess:       sess,
 	}, nil
 }
 
+// Process executes a single user input turn and returns the final assistant response.
 func (a *Agent) Process(ctx context.Context, input string) (string, error) {
 	a.scheduleConsolidation()
 
-	sys := a.systemPrompt()
-	history := a.sess.History(a.memoryWindow)
-	messages := make([]llm.Message, 0, 1+len(history)+1)
-	messages = append(messages, llm.Message{Role: "system", Content: sys})
-	for _, m := range history {
-		messages = append(messages, llm.Message{Role: m.Role, Content: m.Content})
-	}
-	messages = append(messages, llm.Message{Role: "user", Content: input})
-
-	toolsDefs := a.tools.Definitions()
-
-	var final string
-	toolsUsed := make([]string, 0, 8)
-	for iter := 0; iter < a.maxIters; iter++ {
-		res, err := a.llm.Chat(ctx, messages, toolsDefs)
-		if err != nil {
-			return "", err
-		}
-
-		if res.HasToolCalls() {
-			for _, tc := range res.ToolCalls {
-				toolsUsed = append(toolsUsed, tc.Name)
-			}
-			messages = appendToolRound(messages, res.Content, res.ToolCalls, func(tc llm.ToolCall) string {
-				argsPreview := previewJSON(tc.Arguments, 200)
-				if a.toolObserver != nil {
-					a.toolObserver(ToolEvent{Phase: ToolStart, Name: tc.Name, Args: argsPreview})
-				}
-				start := time.Now()
-				out, err := a.tools.Execute(ctx, tools.Context{
-					Channel:    "cli",
-					ChatID:     "direct",
-					SessionKey: a.sess.Key,
-				}, tc.Name, tc.Arguments)
-				dur := time.Since(start)
-				if a.toolObserver != nil {
-					ev := ToolEvent{Phase: ToolEnd, Name: tc.Name, Duration: dur}
-					if err != nil {
-						ev.Error = err.Error()
-					} else {
-						ev.Output = out
-					}
-					a.toolObserver(ev)
-				}
-				if err != nil {
-					return "error: " + err.Error()
-				}
-				return out
-			})
-			continue
-		}
-
-		final = res.Content
-		break
-	}
-	if strings.TrimSpace(final) == "" {
-		final = "(no response)"
+	out, err := a.runner.Run(ctx, TurnInput{
+		UserMessage:     llm.Message{Role: "user", Content: input},
+		SessionUserText: input,
+		Channel:         "cli",
+		ChatID:          "direct",
+	}, a.sess)
+	if err != nil {
+		return "", err
 	}
 
-	a.sess.Add("user", input)
-	a.sess.AddWithTools("assistant", final, toolsUsed)
 	_ = session.Save(a.sessionDir, a.sess)
-	return final, nil
+	return out.Final, nil
 }
 
 func (a *Agent) scheduleConsolidation() {
 	if a == nil || a.sess == nil {
 		return
 	}
-	if !a.sess.NeedsConsolidation(a.memoryWindow) {
+	if !a.sess.NeedsConsolidation(a.runner.MemoryWindow) {
 		return
 	}
 
@@ -230,8 +166,8 @@ func (a *Agent) scheduleConsolidation() {
 		cctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
-		done, err := maybeConsolidateSession(cctx, a.workspace, a.sess, a.memoryWindow, func(ctx context.Context, currentMemory, conversation string) (string, string, error) {
-			return summarizeConsolidationWithLLM(ctx, a.llm, currentMemory, conversation)
+		done, err := maybeConsolidateSession(cctx, a.runner.Workspace, a.sess, a.runner.MemoryWindow, func(ctx context.Context, currentMemory, conversation string) (string, string, error) {
+			return summarizeConsolidationWithLLM(ctx, a.runner.LLM, currentMemory, conversation)
 		})
 		if err != nil {
 			if a.verbose {
@@ -246,55 +182,4 @@ func (a *Agent) scheduleConsolidation() {
 			fmt.Fprintf(os.Stderr, "consolidation save error: %v\n", err)
 		}
 	}()
-}
-
-func (a *Agent) systemPrompt() string {
-	now := time.Now().Format("2006-01-02 15:04 (Mon)")
-	ws := a.workspace
-	rt := fmt.Sprintf("%s/%s Go %s", runtime.GOOS, runtime.GOARCH, runtime.Version())
-
-	var b strings.Builder
-	b.WriteString("# clawlet\n\n")
-	b.WriteString("You are clawlet, a helpful AI assistant.\n")
-	b.WriteString("You can use tools to read/write/edit files, list directories, execute shell commands, and fetch/search the web.\n\n")
-	b.WriteString("IMPORTANT: Reply with plain text. Do not call the message tool.\n\n")
-	b.WriteString("## Current Time\n")
-	b.WriteString(now + "\n\n")
-	b.WriteString("## Runtime\n")
-	b.WriteString(rt + "\n\n")
-	b.WriteString("## Workspace\n")
-	b.WriteString(ws + "\n\n")
-	if a.cfg.Tools.RestrictToWorkspaceValue() {
-		b.WriteString("## Safety\nTools are restricted to the workspace directory.\n\n")
-	}
-
-	// Bootstrap files from workspace (optional).
-	for _, fn := range []string{"AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"} {
-		p := filepath.Join(ws, fn)
-		if bb, err := os.ReadFile(p); err == nil && len(bb) > 0 {
-			b.WriteString("## " + fn + "\n\n")
-			b.Write(bb)
-			if bb[len(bb)-1] != '\n' {
-				b.WriteString("\n")
-			}
-			b.WriteString("\n")
-		}
-	}
-
-	// Memory (long-term + today's notes)
-	mem := memory.New(ws).GetContext()
-	if strings.TrimSpace(mem) != "" {
-		b.WriteString("# Memory\n\n")
-		b.WriteString(mem)
-		b.WriteString("\n\n")
-	}
-	return b.String()
-}
-
-func previewJSON(b json.RawMessage, max int) string {
-	s := strings.TrimSpace(string(b))
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "..."
 }

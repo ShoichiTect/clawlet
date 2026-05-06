@@ -15,7 +15,7 @@ type Store struct {
 }
 
 func New(workspace string) *Store {
-	dir := filepath.Join(workspace, "memory")
+	dir := filepath.Join(workspace, ".clawlet", "memory")
 	return &Store{
 		Workspace: workspace,
 		Dir:       dir,

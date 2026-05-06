@@ -1111,7 +1111,7 @@ func resolveSearchConfig(cfg *config.Config, workspace string) (resolvedSearchCo
 		}
 	}
 	if out.storePath == "" {
-		out.storePath = filepath.Join(workspace, ".memory", "index.sqlite")
+		out.storePath = filepath.Join(workspace, ".clawlet", "memory", "index.sqlite")
 	} else {
 		pathValue := strings.ReplaceAll(out.storePath, "{workspace}", workspace)
 		if !filepath.IsAbs(pathValue) {
@@ -1367,9 +1367,9 @@ func listMemoryPaths(workspace string) ([]string, error) {
 		}
 		out = append(out, abs)
 	}
-	addIfFile(filepath.Join(workspace, "MEMORY.md"))
-	addIfFile(filepath.Join(workspace, "memory.md"))
-	memDir := filepath.Join(workspace, "memory")
+	addIfFile(filepath.Join(workspace, ".clawlet", "memory", "MEMORY.md"))
+	addIfFile(filepath.Join(workspace, ".clawlet", "memory", "memory.md"))
+	memDir := filepath.Join(workspace, ".clawlet", "memory")
 	_ = filepath.WalkDir(memDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -1411,10 +1411,10 @@ func listMemoryPaths(workspace string) ([]string, error) {
 func isMemoryPath(rel string) bool {
 	normalized := filepath.ToSlash(strings.TrimSpace(rel))
 	normalized = strings.TrimPrefix(normalized, "./")
-	if normalized == "MEMORY.md" || normalized == "memory.md" {
+	if normalized == ".clawlet/memory/MEMORY.md" || normalized == ".clawlet/memory/memory.md" {
 		return true
 	}
-	return strings.HasPrefix(normalized, "memory/")
+	return strings.HasPrefix(normalized, ".clawlet/memory/")
 }
 
 var tokenRe = regexp.MustCompile(`[A-Za-z0-9_]+`)

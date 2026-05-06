@@ -60,7 +60,7 @@ func TestMaybeConsolidateSession_TrimAndArchive(t *testing.T) {
 		t.Fatalf("messages=%d", len(sess.Messages))
 	}
 
-	historyPath := filepath.Join(ws, "memory", "HISTORY.md")
+	historyPath := filepath.Join(ws, ".clawlet", "memory", "HISTORY.md")
 	b, err := os.ReadFile(historyPath)
 	if err != nil {
 		t.Fatalf("read HISTORY.md: %v", err)
@@ -73,7 +73,7 @@ func TestMaybeConsolidateSession_TrimAndArchive(t *testing.T) {
 		t.Fatalf("missing history entry: %s", content)
 	}
 
-	memPath := filepath.Join(ws, "memory", "MEMORY.md")
+	memPath := filepath.Join(ws, ".clawlet", "memory", "MEMORY.md")
 	mem, err := os.ReadFile(memPath)
 	if err != nil {
 		t.Fatalf("read MEMORY.md: %v", err)

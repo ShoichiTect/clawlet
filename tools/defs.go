@@ -223,7 +223,7 @@ func defMemorySearch() llm.ToolDefinition {
 		Type: "function",
 		Function: llm.FunctionDefinition{
 			Name:        "memory_search",
-			Description: "Semantic memory search over MEMORY.md and memory/*.md.",
+			Description: "Semantic memory search over .clawlet/memory/MEMORY.md and .clawlet/memory/*.md.",
 			Parameters: llm.JSONSchema{
 				Type: "object",
 				Properties: map[string]llm.JSONSchema{
@@ -242,7 +242,7 @@ func defMemoryGet() llm.ToolDefinition {
 		Type: "function",
 		Function: llm.FunctionDefinition{
 			Name:        "memory_get",
-			Description: "Read a safe snippet from MEMORY.md or memory/*.md.",
+			Description: "Read a safe snippet from .clawlet/memory/MEMORY.md or .clawlet/memory/*.md.",
 			Parameters: llm.JSONSchema{
 				Type: "object",
 				Properties: map[string]llm.JSONSchema{

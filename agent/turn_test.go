@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -283,7 +284,10 @@ func TestBuildSystemPrompt_Gateway(t *testing.T) {
 
 func TestBuildSystemPrompt_BootstrapFiles(t *testing.T) {
 	ws := t.TempDir()
-	if err := os.WriteFile(ws+"/AGENTS.md", []byte("test agents content"), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(ws, ".clawlet"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".clawlet", "AGENTS.md"), []byte("test agents content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

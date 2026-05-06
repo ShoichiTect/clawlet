@@ -49,6 +49,22 @@ type LoopOptions struct {
 	Verbose      bool
 }
 
+type SessionSummary struct {
+	Key          string    `json:"key"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	MessageCount int       `json:"message_count"`
+	Preview      string    `json:"preview,omitempty"`
+}
+
+type SessionDetail struct {
+	Key          string            `json:"key"`
+	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
+	MessageCount int               `json:"message_count"`
+	Messages     []session.Message `json:"messages"`
+}
+
 // NewLoop creates a gateway Loop.
 func NewLoop(opts LoopOptions) (*Loop, error) {
 	if opts.Config == nil {
@@ -144,6 +160,73 @@ func NewLoop(opts LoopOptions) (*Loop, error) {
 }
 
 // ProcessDirect executes a single turn synchronously for the given session/connection.
+func (l *Loop) ListSessions() ([]SessionSummary, error) {
+	sessions, err := l.sessions.List()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SessionSummary, 0, len(sessions))
+	for _, s := range sessions {
+		out = append(out, sessionSummary(s))
+	}
+	return out, nil
+}
+
+func (l *Loop) GetSession(key string) (SessionDetail, error) {
+	s, err := l.sessions.LoadExisting(key)
+	if err != nil {
+		return SessionDetail{}, err
+	}
+	if s == nil {
+		return SessionDetail{}, fmt.Errorf("session not found: %s", key)
+	}
+	return sessionDetail(s), nil
+}
+
+func (l *Loop) CreateSession(key string) (SessionDetail, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return SessionDetail{}, fmt.Errorf("session key is required")
+	}
+	s, err := l.sessions.Create(key)
+	if err != nil {
+		return SessionDetail{}, err
+	}
+	return sessionDetail(s), nil
+}
+
+func sessionSummary(s *session.Session) SessionSummary {
+	msgs := s.History(0)
+	preview := ""
+	for i := len(msgs) - 1; i >= 0; i-- {
+		preview = strings.TrimSpace(strings.ReplaceAll(msgs[i].Content, "\n", " "))
+		if preview != "" {
+			break
+		}
+	}
+	if len(preview) > 80 {
+		preview = preview[:80] + "..."
+	}
+	return SessionSummary{
+		Key:          s.Key,
+		CreatedAt:    s.CreatedAt,
+		UpdatedAt:    s.UpdatedAt,
+		MessageCount: len(msgs),
+		Preview:      preview,
+	}
+}
+
+func sessionDetail(s *session.Session) SessionDetail {
+	msgs := s.History(0)
+	return SessionDetail{
+		Key:          s.Key,
+		CreatedAt:    s.CreatedAt,
+		UpdatedAt:    s.UpdatedAt,
+		MessageCount: len(msgs),
+		Messages:     msgs,
+	}
+}
+
 func (l *Loop) ProcessDirect(ctx context.Context, content, sessionKey, channel, chatID string) (string, error) {
 	out, err := l.ProcessTurn(ctx, content, sessionKey, channel, chatID)
 	if err != nil {
@@ -154,14 +237,19 @@ func (l *Loop) ProcessDirect(ctx context.Context, content, sessionKey, channel, 
 
 // ProcessTurn executes a single turn and returns the full turn output.
 func (l *Loop) ProcessTurn(ctx context.Context, content, sessionKey, channel, chatID string) (TurnOutput, error) {
+	return l.ProcessTurnWithObserver(ctx, content, sessionKey, channel, chatID, nil)
+}
+
+// ProcessTurnWithObserver executes a single turn and emits per-turn tool events to observer.
+func (l *Loop) ProcessTurnWithObserver(ctx context.Context, content, sessionKey, channel, chatID string, observer TurnObserver) (TurnOutput, error) {
 	userText := strings.TrimSpace(content)
 	if strings.TrimSpace(sessionKey) == "" {
 		sessionKey = "default"
 	}
-	return l.processDirect(ctx, llm.Message{Role: "user", Content: content}, userText, sessionKey, channel, chatID)
+	return l.processDirect(ctx, llm.Message{Role: "user", Content: content}, userText, sessionKey, channel, chatID, observer)
 }
 
-func (l *Loop) processDirect(ctx context.Context, userMessage llm.Message, sessionUserText, sessionKey, channel, chatID string) (TurnOutput, error) {
+func (l *Loop) processDirect(ctx context.Context, userMessage llm.Message, sessionUserText, sessionKey, channel, chatID string, observer TurnObserver) (TurnOutput, error) {
 	sess, err := l.sessions.GetOrCreate(sessionKey)
 	if err != nil {
 		return TurnOutput{}, err
@@ -173,6 +261,7 @@ func (l *Loop) processDirect(ctx context.Context, userMessage llm.Message, sessi
 		SessionUserText: sessionUserText,
 		Channel:         channel,
 		ChatID:          chatID,
+		Observer:        observer,
 	}, sess)
 	if err != nil {
 		return TurnOutput{}, err

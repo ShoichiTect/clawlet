@@ -24,7 +24,15 @@ type promptMode int
 const (
 	promptNone promptMode = iota
 	promptAddProject
-	promptSessionKey
+	promptNewSession
+)
+
+type chatMode int
+
+const (
+	chatModeInput chatMode = iota
+	chatModeSessions
+	chatModeSessionPreview
 )
 
 type chatMessage struct {
@@ -47,6 +55,12 @@ type model struct {
 	messages    []chatMessage
 	latestTools []string
 
+	chatMode       chatMode
+	sessions       []SessionSummary
+	sessionCursor  int
+	sessionPreview SessionDetail
+	sessionLoading bool
+
 	width  int
 	height int
 
@@ -66,18 +80,45 @@ type chatDoneMsg struct {
 	err      error
 }
 
+type chatStreamStartedMsg struct {
+	events <-chan ChatStreamEvent
+}
+
+type chatStreamEventMsg struct {
+	event  ChatStreamEvent
+	events <-chan ChatStreamEvent
+}
+
+type chatStreamClosedMsg struct{}
+
+type sessionsDoneMsg struct {
+	sessions []SessionSummary
+	err      error
+}
+
+type sessionPreviewDoneMsg struct {
+	detail SessionDetail
+	err    error
+}
+
+type sessionCreateDoneMsg struct {
+	detail SessionDetail
+	err    error
+}
+
 type healthDoneMsg GatewayResult
 
 var (
 	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63"))
-	helpStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	helpStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
 	errorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	successStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	warnStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
 	userStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
 	agentStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
 	systemStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
+	toolStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("220"))
 )
 
 func newModel(st State) model {
@@ -137,10 +178,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err != nil {
 			m.latestTools = nil
-			systemMsg := chatMessage{Role: "system", Content: fmt.Sprintf("%s: %v", msg.status, msg.err)}
-			m.messages = append(m.messages, systemMsg)
+			errorMsg := chatMessage{Role: "error", Content: fmt.Sprintf("%s: %v", msg.status, msg.err)}
+			m.messages = append(m.messages, errorMsg)
 			m.errorMsg = msg.err.Error()
-			return m, tea.Println(renderTranscriptMessage(systemMsg, nil))
+			return m, tea.Println(renderTranscriptMessage(errorMsg, nil))
 		}
 		m.latestTools = msg.response.ToolsUsed
 		assistantMsg := chatMessage{Role: "assistant", Content: msg.response.Content}
@@ -148,6 +189,83 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "response received"
 		m.errorMsg = ""
 		return m, tea.Println(renderTranscriptMessage(assistantMsg, msg.response.ToolsUsed))
+	case chatStreamStartedMsg:
+		return m, readChatStreamCmd(msg.events)
+	case chatStreamEventMsg:
+		event := msg.event
+		switch event.Type {
+		case "tool_start", "tool_end":
+			m.status = "tool event received"
+			if event.Error != "" {
+				m.errorMsg = event.Error
+			}
+			return m, tea.Sequence(tea.Println(renderChatStreamEvent(event)), readChatStreamCmd(msg.events))
+		case "assistant_final":
+			m.latestTools = event.ToolsUsed
+			assistantMsg := chatMessage{Role: "assistant", Content: event.Content}
+			m.messages = append(m.messages, assistantMsg)
+			m.status = "response received"
+			m.errorMsg = ""
+			return m, tea.Sequence(tea.Println(renderTranscriptMessage(assistantMsg, event.ToolsUsed)), readChatStreamCmd(msg.events))
+		case "error":
+			m.latestTools = nil
+			m.errorMsg = event.Error
+			errorMsg := chatMessage{Role: "error", Content: event.Error}
+			m.messages = append(m.messages, errorMsg)
+			m.status = "error"
+			return m, tea.Sequence(tea.Println(renderTranscriptMessage(errorMsg, nil)), readChatStreamCmd(msg.events))
+		case "done":
+			m.chatting = false
+			if m.status == "sending message..." {
+				m.status = "done"
+			}
+			return m, readChatStreamCmd(msg.events)
+		default:
+			return m, readChatStreamCmd(msg.events)
+		}
+	case chatStreamClosedMsg:
+		m.chatting = false
+		if m.status == "sending message..." {
+			m.status = "stream closed"
+		}
+		return m, nil
+	case sessionsDoneMsg:
+		m.sessionLoading = false
+		if msg.err != nil {
+			m.errorMsg = msg.err.Error()
+			m.status = "session list error"
+			return m, nil
+		}
+		m.sessions = msg.sessions
+		if m.sessionCursor >= len(m.sessions) {
+			m.sessionCursor = len(m.sessions) - 1
+		}
+		if m.sessionCursor < 0 {
+			m.sessionCursor = 0
+		}
+		m.status = fmt.Sprintf("found %d session(s)", len(m.sessions))
+		m.errorMsg = ""
+		return m, nil
+	case sessionPreviewDoneMsg:
+		m.sessionLoading = false
+		if msg.err != nil {
+			m.errorMsg = msg.err.Error()
+			m.status = "session preview error"
+			return m, nil
+		}
+		m.sessionPreview = msg.detail
+		m.chatMode = chatModeSessionPreview
+		m.status = "session preview"
+		m.errorMsg = ""
+		return m, nil
+	case sessionCreateDoneMsg:
+		m.sessionLoading = false
+		if msg.err != nil {
+			m.errorMsg = msg.err.Error()
+			m.status = "session create error"
+			return m, nil
+		}
+		return m.switchSession(msg.detail.Key)
 	case healthDoneMsg:
 		m.selected.Status = msg.Status
 		m.selected.Health = msg.Health
@@ -275,35 +393,35 @@ func (m model) handleProjectKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd)
 }
 
 func (m model) handleChatKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.prompt == promptSessionKey {
+	if m.prompt == promptNewSession {
 		switch key {
 		case "esc":
 			m.prompt = promptNone
-			m.chatInput.Focus()
-			m.status = "session change cancelled"
+			m.promptInput.Blur()
+			m.status = "new session cancelled"
 			return m, nil
 		case "enter":
 			sessionKey := strings.TrimSpace(m.promptInput.Value())
 			if sessionKey == "" {
-				m.errorMsg = "session key is required"
-				return m, nil
-			}
-			m.selected.SessionKey = sessionKey
-			m.updateProject(m.selected)
-			m.state = upsertProjectState(m.state, m.selected.Path, sessionKey, time.Now().UTC())
-			if err := SaveState(m.state); err != nil {
-				m.errorMsg = err.Error()
-				return m, nil
+				sessionKey = generatedSessionKey()
 			}
 			m.prompt = promptNone
-			m.chatInput.Focus()
-			m.status = "session key updated"
+			m.promptInput.Blur()
+			m.sessionLoading = true
+			m.status = "creating session..."
 			m.errorMsg = ""
-			return m, nil
+			return m, createSessionCmd(m.selected.Path, sessionKey)
 		}
 		var cmd tea.Cmd
 		m.promptInput, cmd = m.promptInput.Update(msg)
 		return m, cmd
+	}
+
+	if m.chatMode == chatModeSessions {
+		return m.handleSessionListKey(key)
+	}
+	if m.chatMode == chatModeSessionPreview {
+		return m.handleSessionPreviewKey(key)
 	}
 
 	switch key {
@@ -313,14 +431,12 @@ func (m model) handleChatKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = "back to projects"
 		return m, nil
 	case "ctrl+s":
-		m.prompt = promptSessionKey
-		m.promptInput.SetValue(m.selected.SessionKey)
-		m.promptInput.Placeholder = defaultSessionKey
-		m.promptInput.Prompt = "session key > "
-		m.promptInput.Focus()
-		m.chatInput.Blur()
-		m.status = "edit session key"
-		return m, nil
+		m.chatMode = chatModeSessions
+		m.prompt = promptNone
+		m.sessionLoading = true
+		m.status = "loading sessions..."
+		m.errorMsg = ""
+		return m, sessionsCmd(m.selected.Path)
 	case "ctrl+r":
 		m.status = "checking gateway health..."
 		m.errorMsg = ""
@@ -346,13 +462,104 @@ func (m model) handleChatKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.errorMsg = ""
 		return m, tea.Sequence(
 			tea.Println(renderTranscriptMessage(userMsg, nil)),
-			chatCmd(m.selected.Path, message, m.selected.SessionKey),
+			chatStreamCmd(m.selected.Path, message, m.selected.SessionKey),
 		)
 	}
 
 	var cmd tea.Cmd
 	m.chatInput, cmd = m.chatInput.Update(msg)
 	return m, cmd
+}
+
+func (m model) handleSessionListKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc":
+		m.chatMode = chatModeInput
+		m.prompt = promptNone
+		m.chatInput.Focus()
+		m.status = "back to chat"
+		return m, nil
+	case "up", "k":
+		if m.sessionCursor > 0 {
+			m.sessionCursor--
+		}
+	case "down", "j":
+		if m.sessionCursor < len(m.sessions)-1 {
+			m.sessionCursor++
+		}
+	case "r":
+		m.sessionLoading = true
+		m.status = "loading sessions..."
+		m.errorMsg = ""
+		return m, sessionsCmd(m.selected.Path)
+	case "n":
+		m.prompt = promptNewSession
+		m.promptInput.SetValue("")
+		m.promptInput.Placeholder = generatedSessionKey()
+		m.promptInput.Prompt = "new session > "
+		m.promptInput.Focus()
+		m.chatInput.Blur()
+		m.status = "enter a session key (empty = auto)"
+		return m, nil
+	case "enter":
+		if len(m.sessions) == 0 {
+			return m, nil
+		}
+		return m.switchSession(m.sessions[m.sessionCursor].Key)
+	case "v", " ":
+		if len(m.sessions) == 0 {
+			return m, nil
+		}
+		m.sessionLoading = true
+		m.status = "loading session preview..."
+		m.errorMsg = ""
+		return m, sessionPreviewCmd(m.selected.Path, m.sessions[m.sessionCursor].Key)
+	}
+	return m, nil
+}
+
+func (m model) handleSessionPreviewKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc":
+		m.chatMode = chatModeSessions
+		m.status = "sessions"
+		return m, nil
+	case "enter":
+		return m.switchSession(m.sessionPreview.Key)
+	}
+	return m, nil
+}
+
+func (m model) switchSession(sessionKey string) (model, tea.Cmd) {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" {
+		m.errorMsg = "session key is required"
+		return m, nil
+	}
+	oldSessionKey := m.selected.SessionKey
+	m.selected.SessionKey = sessionKey
+	m.updateProject(m.selected)
+	m.state = upsertProjectState(m.state, m.selected.Path, sessionKey, time.Now().UTC())
+	if err := SaveState(m.state); err != nil {
+		m.errorMsg = err.Error()
+		return m, nil
+	}
+	m.chatMode = chatModeInput
+	m.prompt = promptNone
+	m.chatInput.Focus()
+	m.errorMsg = ""
+	if oldSessionKey == sessionKey {
+		m.status = "session key unchanged"
+		return m, nil
+	}
+	m.status = "session key updated"
+	sessionMsg := chatMessage{Role: "session-changed", Content: fmt.Sprintf("%s → %s", oldSessionKey, sessionKey)}
+	m.messages = append(m.messages, sessionMsg)
+	return m, tea.Println(renderTranscriptMessage(sessionMsg, nil))
+}
+
+func generatedSessionKey() string {
+	return "session-" + time.Now().Format("20060102-150405")
 }
 
 func (m model) View() string {
@@ -411,34 +618,139 @@ func (m model) viewProjects() string {
 
 func (m model) viewChat() string {
 	var b strings.Builder
-	if m.prompt == promptSessionKey {
-		b.WriteString(m.promptInput.View())
+
+	switch m.chatMode {
+	case chatModeSessions:
+		b.WriteString(m.viewSessions())
+	case chatModeSessionPreview:
+		b.WriteString(m.viewSessionPreview())
+	case chatModeInput:
+		fallthrough
+	default:
+		if m.prompt == promptNewSession {
+			b.WriteString(m.promptInput.View())
+			b.WriteString("\n")
+		} else {
+			b.WriteString("message > ")
+			b.WriteString(m.chatInput.View())
+			b.WriteString("\n")
+		}
+
+		if m.chatting {
+			b.WriteString(warnStyle.Render("sending..."))
+			b.WriteString("\n")
+		}
+		if len(m.latestTools) > 0 {
+			b.WriteString(dimStyle.Render("tools_used: " + strings.Join(m.latestTools, ", ")))
+			b.WriteString("\n")
+		} else {
+			b.WriteString(dimStyle.Render("tools_used: -"))
+			b.WriteString("\n")
+		}
+		if status := m.statusLine(); status != "" {
+			b.WriteString(status)
+			b.WriteString("\n")
+		}
+		b.WriteString(helpStyle.Render("Enter: send  Esc: projects  Ctrl+S: sessions  Ctrl+R: health  Ctrl+L: clear  Ctrl+C: quit"))
 		b.WriteString("\n")
-	} else {
-		b.WriteString("message > ")
-		b.WriteString(m.chatInput.View())
+		b.WriteString(m.chatFooter())
+	}
+	return b.String()
+}
+
+func (m model) viewSessions() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("clawlet tui — sessions"))
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("project: %s\n", m.selected.Path))
+	b.WriteString(helpStyle.Render("↑/↓: select  Enter: switch  n: new  v: preview  r: reload  Esc: chat"))
+	b.WriteString("\n\n")
+
+	if m.sessionLoading {
+		b.WriteString(warnStyle.Render("loading..."))
+		b.WriteString("\n")
+	} else if len(m.sessions) == 0 {
+		b.WriteString(dimStyle.Render("No sessions found. Press n to create a new session."))
+		b.WriteString("\n")
+	}
+	for i, s := range m.sessions {
+		cursor := " "
+		if i == m.sessionCursor {
+			cursor = ">"
+		}
+		current := ""
+		if s.Key == m.selected.SessionKey {
+			current = warnStyle.Render(" [current]")
+		}
+		updated := s.UpdatedAt.Format("2006-01-02 15:04")
+		line := fmt.Sprintf("%s %s  updated: %s  msgs: %d%s", cursor, s.Key, updated, s.MessageCount, current)
+		b.WriteString(line)
+		b.WriteString("\n")
+		if strings.TrimSpace(s.Preview) != "" {
+			b.WriteString(dimStyle.Render("    " + s.Preview))
+			b.WriteString("\n")
+		}
+	}
+
+	if m.prompt == promptNewSession {
+		b.WriteString("\n")
+		b.WriteString(m.promptInput.View())
 		b.WriteString("\n")
 	}
 
-	if m.chatting {
-		b.WriteString(warnStyle.Render("sending..."))
-		b.WriteString("\n")
-	}
-	if len(m.latestTools) > 0 {
-		b.WriteString(dimStyle.Render("tools_used: " + strings.Join(m.latestTools, ", ")))
-		b.WriteString("\n")
-	} else {
-		b.WriteString(dimStyle.Render("tools_used: -"))
-		b.WriteString("\n")
-	}
-	if status := m.statusLine(); status != "" {
-		b.WriteString(status)
-		b.WriteString("\n")
-	}
-	b.WriteString(helpStyle.Render("Enter: send  Esc: projects  Ctrl+S: session  Ctrl+R: health  Ctrl+L: clear  Ctrl+C: quit"))
+	b.WriteString("\n")
+	b.WriteString(m.statusLine())
 	b.WriteString("\n")
 	b.WriteString(m.chatFooter())
 	return b.String()
+}
+
+func (m model) viewSessionPreview() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("clawlet tui — session preview"))
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("Enter: switch  Esc: sessions"))
+	b.WriteString("\n\n")
+
+	if m.sessionLoading {
+		b.WriteString(warnStyle.Render("loading..."))
+		b.WriteString("\n")
+	} else {
+		b.WriteString(fmt.Sprintf("session: %s  msgs: %d\n", m.sessionPreview.Key, m.sessionPreview.MessageCount))
+		b.WriteString("\n")
+		for _, msg := range lastNMessages(m.sessionPreview.Messages, 10) {
+			label := msg.Role
+			switch msg.Role {
+			case "user":
+				label = userStyle.Render("user")
+			case "assistant":
+				label = agentStyle.Render("assistant")
+			default:
+				label = dimStyle.Render(msg.Role)
+			}
+			b.WriteString(label + ":\n")
+			content := strings.TrimSpace(msg.Content)
+			if content == "" {
+				content = "(empty)"
+			}
+			for _, line := range strings.Split(content, "\n") {
+				b.WriteString("  " + line + "\n")
+			}
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString(m.statusLine())
+	b.WriteString("\n")
+	b.WriteString(m.chatFooter())
+	return b.String()
+}
+
+func lastNMessages(msgs []SessionMessage, n int) []SessionMessage {
+	if n <= 0 || len(msgs) <= n {
+		return msgs
+	}
+	return msgs[len(msgs)-n:]
 }
 
 func (m model) chatFooter() string {
@@ -465,6 +777,10 @@ func (m model) renderChatLog(maxLines int) string {
 			label = userStyle.Render("user")
 		case "assistant":
 			label = agentStyle.Render("assistant")
+		case "error":
+			label = errorStyle.Render("error")
+		case "session-changed":
+			label = warnStyle.Render("session-changed")
 		default:
 			label = systemStyle.Render(msg.Role)
 		}
@@ -511,11 +827,18 @@ func renderTranscriptMessage(msg chatMessage, tools []string) string {
 	}
 
 	label := "[" + role + "]"
+	contentStyle := lipgloss.NewStyle()
 	switch role {
 	case "user":
 		label = userStyle.Render(label)
 	case "assistant":
 		label = agentStyle.Render(label)
+	case "error":
+		label = errorStyle.Render(label)
+		contentStyle = errorStyle
+	case "session-changed":
+		label = warnStyle.Render(label)
+		contentStyle = warnStyle
 	default:
 		label = systemStyle.Render(label)
 	}
@@ -525,7 +848,7 @@ func renderTranscriptMessage(msg chatMessage, tools []string) string {
 	b.WriteString("\n")
 	for _, line := range strings.Split(content, "\n") {
 		b.WriteString("  ")
-		b.WriteString(line)
+		b.WriteString(contentStyle.Render(line))
 		b.WriteString("\n")
 	}
 	if len(tools) > 0 {
@@ -534,6 +857,129 @@ func renderTranscriptMessage(msg chatMessage, tools []string) string {
 		b.WriteString("\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderChatStreamEvent(ev ChatStreamEvent) string {
+	switch ev.Type {
+	case "tool_start":
+		line := strings.TrimSpace(ev.Name)
+		if strings.TrimSpace(ev.Args) != "" {
+			line += " " + strings.TrimSpace(ev.Args)
+		}
+		return renderBlock("tool:stdin", toolStyle, line)
+	case "tool_end":
+		return renderToolEnd(ev)
+	case "error":
+		return renderTranscriptMessage(chatMessage{Role: "error", Content: ev.Error}, nil)
+	default:
+		return dimStyle.Render(ev.Type)
+	}
+}
+
+func renderBlock(role string, style lipgloss.Style, content string) string {
+	return renderStyledBlock(role, style, lipgloss.NewStyle(), content)
+}
+
+func renderStyledBlock(role string, labelStyle lipgloss.Style, contentStyle lipgloss.Style, content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		content = "(empty)"
+	}
+	var b strings.Builder
+	b.WriteString(labelStyle.Render("[" + role + "]"))
+	b.WriteString("\n")
+	for _, line := range strings.Split(content, "\n") {
+		b.WriteString("  ")
+		b.WriteString(contentStyle.Render(line))
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderToolEnd(ev ChatStreamEvent) string {
+	status := strings.TrimSpace(ev.Name)
+	if ev.DurationMS > 0 {
+		status += fmt.Sprintf(" (%s)", time.Duration(ev.DurationMS)*time.Millisecond)
+	}
+
+	var blocks []string
+	if ev.Error != "" {
+		blocks = append(blocks, renderBlock("tool:status", toolStyle, status))
+		blocks = append(blocks, renderStyledBlock("tool:stderr", errorStyle, errorStyle, "(error) "+ev.Error))
+		return strings.Join(blocks, "\n") + "\n"
+	}
+
+	meta, stdout, stderr := splitToolOutput(ev.Output)
+	if len(meta) > 0 {
+		status += "\n" + strings.Join(meta, "\n")
+	}
+	blocks = append(blocks, renderBlock("tool:status", toolStyle, status))
+	if len(stdout) > 0 {
+		blocks = append(blocks, renderBlock("tool:stdout", toolStyle, strings.Join(stdout, "\n")))
+	}
+	if len(stderr) > 0 {
+		blocks = append(blocks, renderStyledBlock("tool:stderr", errorStyle, errorStyle, strings.Join(stderr, "\n")))
+	}
+	return strings.Join(blocks, "\n") + "\n"
+}
+
+func splitToolOutput(output string) (meta []string, stdout []string, stderr []string) {
+	output = strings.TrimRight(output, "\n")
+	if strings.TrimSpace(output) == "" {
+		return nil, nil, nil
+	}
+
+	section := "meta"
+	sawStreamMarker := false
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch trimmed {
+		case "stdout:":
+			section = "stdout"
+			sawStreamMarker = true
+			continue
+		case "stderr:":
+			section = "stderr"
+			sawStreamMarker = true
+			continue
+		}
+		if strings.HasPrefix(trimmed, "error:") {
+			stderr = append(stderr, line)
+			sawStreamMarker = true
+			continue
+		}
+		switch section {
+		case "stdout":
+			stdout = append(stdout, line)
+		case "stderr":
+			stderr = append(stderr, line)
+		default:
+			meta = append(meta, line)
+		}
+	}
+
+	if !sawStreamMarker && !metaLooksLikeStatus(meta) {
+		stdout = meta
+		meta = nil
+	}
+	return meta, stdout, stderr
+}
+
+func metaLooksLikeStatus(lines []string) bool {
+	if len(lines) == 0 {
+		return false
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "exit=") {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (m model) statusLine() string {
@@ -584,9 +1030,55 @@ func chatCmd(workspace string, message string, sessionKey string) tea.Cmd {
 	}
 }
 
+func chatStreamCmd(workspace string, message string, sessionKey string) tea.Cmd {
+	return func() tea.Msg {
+		return chatStreamStartedMsg{events: StreamChat(context.Background(), workspace, message, sessionKey, 10*time.Minute)}
+	}
+}
+
+func readChatStreamCmd(events <-chan ChatStreamEvent) tea.Cmd {
+	return func() tea.Msg {
+		ev, ok := <-events
+		if !ok {
+			return chatStreamClosedMsg{}
+		}
+		return chatStreamEventMsg{event: ev, events: events}
+	}
+}
+
 func healthCmd(workspace string) tea.Cmd {
 	return func() tea.Msg {
 		return healthDoneMsg(CheckHealth(context.Background(), workspace, 800*time.Millisecond))
+	}
+}
+
+func sessionsCmd(workspace string) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := FetchSessions(context.Background(), workspace, 5*time.Second)
+		if err == nil {
+			return sessionsDoneMsg{sessions: resp.Sessions}
+		}
+		return sessionsDoneMsg{err: err}
+	}
+}
+
+func sessionPreviewCmd(workspace string, key string) tea.Cmd {
+	return func() tea.Msg {
+		detail, err := FetchSession(context.Background(), workspace, key, 5*time.Second)
+		if err == nil {
+			return sessionPreviewDoneMsg{detail: detail}
+		}
+		return sessionPreviewDoneMsg{err: err}
+	}
+}
+
+func createSessionCmd(workspace string, key string) tea.Cmd {
+	return func() tea.Msg {
+		detail, err := CreateSession(context.Background(), workspace, key, 5*time.Second)
+		if err == nil {
+			return sessionCreateDoneMsg{detail: detail}
+		}
+		return sessionCreateDoneMsg{err: err}
 	}
 }
 

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +36,44 @@ type HealthResponse struct {
 type ChatResponse struct {
 	Content   string   `json:"content"`
 	ToolsUsed []string `json:"tools_used"`
+}
+
+type ChatStreamEvent struct {
+	Type       string   `json:"type"`
+	Name       string   `json:"name,omitempty"`
+	Args       string   `json:"args,omitempty"`
+	Output     string   `json:"output,omitempty"`
+	Error      string   `json:"error,omitempty"`
+	DurationMS int64    `json:"duration_ms,omitempty"`
+	Content    string   `json:"content,omitempty"`
+	ToolsUsed  []string `json:"tools_used,omitempty"`
+}
+
+type SessionMessage struct {
+	Role      string   `json:"role"`
+	Content   string   `json:"content"`
+	Timestamp string   `json:"timestamp,omitempty"`
+	ToolsUsed []string `json:"tools_used,omitempty"`
+}
+
+type SessionSummary struct {
+	Key          string    `json:"key"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	MessageCount int       `json:"message_count"`
+	Preview      string    `json:"preview,omitempty"`
+}
+
+type SessionListResponse struct {
+	Sessions []SessionSummary `json:"sessions"`
+}
+
+type SessionDetail struct {
+	Key          string           `json:"key"`
+	CreatedAt    time.Time        `json:"created_at"`
+	UpdatedAt    time.Time        `json:"updated_at"`
+	MessageCount int              `json:"message_count"`
+	Messages     []SessionMessage `json:"messages"`
 }
 
 type GatewayResult struct {
@@ -142,10 +182,7 @@ func SendChat(ctx context.Context, workspace string, message string, sessionKey 
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-		msg := strings.TrimSpace(string(body))
-		if msg == "" {
-			msg = resp.Status
-		}
+		msg := gatewayErrorMessage(body, resp.Status)
 		return ChatResponse{}, &GatewayError{Status: StatusError, Err: fmt.Errorf("gateway API error: %s", msg)}
 	}
 	var out ChatResponse
@@ -153,6 +190,209 @@ func SendChat(ctx context.Context, workspace string, message string, sessionKey 
 		return ChatResponse{}, &GatewayError{Status: StatusError, Err: fmt.Errorf("decode chat response: %w", err)}
 	}
 	return out, nil
+}
+
+func FetchSessions(ctx context.Context, workspace string, timeout time.Duration) (SessionListResponse, error) {
+	var out SessionListResponse
+	if err := doGatewayJSON(ctx, workspace, timeout, http.MethodGet, "http://unix/api/sessions", nil, &out); err != nil {
+		return SessionListResponse{}, err
+	}
+	return out, nil
+}
+
+func FetchSession(ctx context.Context, workspace string, key string, timeout time.Duration) (SessionDetail, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return SessionDetail{}, &GatewayError{Status: StatusError, Err: fmt.Errorf("session key is required")}
+	}
+	var out SessionDetail
+	endpoint := "http://unix/api/session?key=" + url.QueryEscape(key)
+	if err := doGatewayJSON(ctx, workspace, timeout, http.MethodGet, endpoint, nil, &out); err != nil {
+		return SessionDetail{}, err
+	}
+	return out, nil
+}
+
+func CreateSession(ctx context.Context, workspace string, key string, timeout time.Duration) (SessionDetail, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return SessionDetail{}, &GatewayError{Status: StatusError, Err: fmt.Errorf("session key is required")}
+	}
+	body, err := json.Marshal(map[string]string{"key": key})
+	if err != nil {
+		return SessionDetail{}, &GatewayError{Status: StatusError, Err: err}
+	}
+	var out SessionDetail
+	if err := doGatewayJSON(ctx, workspace, timeout, http.MethodPost, "http://unix/api/sessions", body, &out); err != nil {
+		return SessionDetail{}, err
+	}
+	return out, nil
+}
+
+func doGatewayJSON(ctx context.Context, workspace string, timeout time.Duration, method string, endpoint string, body []byte, out any) error {
+	sockPath := SocketPath(workspace)
+	if _, err := os.Stat(sockPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return &GatewayError{Status: StatusOffline, Err: fmt.Errorf("socket not found")}
+		}
+		return &GatewayError{Status: StatusError, Err: err}
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	client := unixHTTPClient(sockPath, timeout)
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
+	if err != nil {
+		return &GatewayError{Status: StatusError, Err: err}
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return &GatewayError{Status: classifyRequestError(ctx, err), Err: err}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		return &GatewayError{Status: StatusError, Err: fmt.Errorf("gateway API error: %s", gatewayErrorMessage(b, resp.Status))}
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return &GatewayError{Status: StatusError, Err: fmt.Errorf("decode gateway response: %w", err)}
+	}
+	return nil
+}
+
+func StreamChat(ctx context.Context, workspace string, message string, sessionKey string, timeout time.Duration) <-chan ChatStreamEvent {
+	events := make(chan ChatStreamEvent, 16)
+	go func() {
+		defer close(events)
+		if err := streamChat(ctx, workspace, message, sessionKey, timeout, func(ev ChatStreamEvent) {
+			events <- ev
+		}); err != nil {
+			events <- ChatStreamEvent{Type: "error", Error: err.Error()}
+		}
+	}()
+	return events
+}
+
+func streamChat(ctx context.Context, workspace string, message string, sessionKey string, timeout time.Duration, emit func(ChatStreamEvent)) error {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return &GatewayError{Status: StatusError, Err: fmt.Errorf("message is required")}
+	}
+	if strings.TrimSpace(sessionKey) == "" {
+		sessionKey = defaultSessionKey
+	}
+
+	sockPath := SocketPath(workspace)
+	if _, err := os.Stat(sockPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return &GatewayError{Status: StatusOffline, Err: fmt.Errorf("socket not found")}
+		}
+		return &GatewayError{Status: StatusError, Err: err}
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	body, err := json.Marshal(map[string]string{
+		"message":     message,
+		"session_key": sessionKey,
+	})
+	if err != nil {
+		return &GatewayError{Status: StatusError, Err: err}
+	}
+
+	client := unixHTTPClient(sockPath, timeout)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/api/chat/stream", bytes.NewReader(body))
+	if err != nil {
+		return &GatewayError{Status: StatusError, Err: err}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := client.Do(req)
+	if err != nil {
+		return &GatewayError{Status: classifyRequestError(ctx, err), Err: err}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		msg := gatewayErrorMessage(body, resp.Status)
+		return &GatewayError{Status: StatusError, Err: fmt.Errorf("gateway stream API error: %s", msg)}
+	}
+	return consumeSSE(resp.Body, emit)
+}
+
+func consumeSSE(r io.Reader, emit func(ChatStreamEvent)) error {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 2<<20)
+
+	var eventName string
+	var dataLines []string
+	dispatch := func() {
+		if eventName == "" && len(dataLines) == 0 {
+			return
+		}
+		data := strings.Join(dataLines, "\n")
+		ev := ChatStreamEvent{Type: eventName}
+		if strings.TrimSpace(data) != "" {
+			if err := json.Unmarshal([]byte(data), &ev); err != nil {
+				ev = ChatStreamEvent{Type: "error", Error: "decode stream event: " + err.Error()}
+			}
+		}
+		if ev.Type == "" {
+			ev.Type = eventName
+		}
+		emit(ev)
+		eventName = ""
+		dataLines = nil
+	}
+
+	for scanner.Scan() {
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		if line == "" {
+			dispatch()
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+		field, value, ok := strings.Cut(line, ":")
+		if ok {
+			value = strings.TrimPrefix(value, " ")
+		} else {
+			value = ""
+		}
+		switch field {
+		case "event":
+			eventName = value
+		case "data":
+			dataLines = append(dataLines, value)
+		}
+	}
+	dispatch()
+	return scanner.Err()
+}
+
+func gatewayErrorMessage(body []byte, fallback string) string {
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err == nil && strings.TrimSpace(payload.Error) != "" {
+		return strings.TrimSpace(payload.Error)
+	}
+	msg := strings.TrimSpace(string(body))
+	if msg == "" {
+		msg = fallback
+	}
+	return msg
 }
 
 func unixHTTPClient(sockPath string, timeout time.Duration) *http.Client {

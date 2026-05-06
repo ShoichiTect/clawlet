@@ -122,6 +122,42 @@ func cmdGateway() *cli.Command {
 					"pid":       os.Getpid(),
 				})
 			})
+			mux.HandleFunc("GET /api/sessions", func(w http.ResponseWriter, r *http.Request) {
+				sessions, err := loop.ListSessions()
+				if err != nil {
+					writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
+			})
+			mux.HandleFunc("POST /api/sessions", func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Key string `json:"key"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON: " + err.Error()})
+					return
+				}
+				detail, err := loop.CreateSession(req.Key)
+				if err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusOK, detail)
+			})
+			mux.HandleFunc("GET /api/session", func(w http.ResponseWriter, r *http.Request) {
+				key := strings.TrimSpace(r.URL.Query().Get("key"))
+				if key == "" {
+					writeJSON(w, http.StatusBadRequest, map[string]any{"error": "session key is required"})
+					return
+				}
+				detail, err := loop.GetSession(key)
+				if err != nil {
+					writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusOK, detail)
+			})
 			mux.HandleFunc("POST /api/chat", func(w http.ResponseWriter, r *http.Request) {
 				var req struct {
 					Message    string `json:"message"`
@@ -150,6 +186,74 @@ func cmdGateway() *cli.Command {
 					"content":    out.Final,
 					"tools_used": out.ToolsUsed,
 				})
+			})
+			mux.HandleFunc("POST /api/chat/stream", func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Message    string `json:"message"`
+					SessionKey string `json:"session_key"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON: " + err.Error()})
+					return
+				}
+				if strings.TrimSpace(req.Message) == "" {
+					writeJSON(w, http.StatusBadRequest, map[string]any{"error": "message is required"})
+					return
+				}
+				flusher, ok := w.(http.Flusher)
+				if !ok {
+					writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "streaming is not supported"})
+					return
+				}
+
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				w.Header().Set("X-Accel-Buffering", "no")
+				w.WriteHeader(http.StatusOK)
+				flusher.Flush()
+
+				sessionKey := strings.TrimSpace(req.SessionKey)
+				if sessionKey == "" {
+					sessionKey = defaultSessionKey
+				}
+				writeEvent := func(event string, v map[string]any) {
+					if _, ok := v["type"]; !ok {
+						v["type"] = event
+					}
+					_ = writeSSE(w, event, v)
+					flusher.Flush()
+				}
+				observer := func(ev agent.ToolEvent) {
+					switch ev.Phase {
+					case agent.ToolStart:
+						writeEvent("tool_start", map[string]any{
+							"name": ev.Name,
+							"args": ev.Args,
+						})
+					case agent.ToolEnd:
+						writeEvent("tool_end", map[string]any{
+							"name":        ev.Name,
+							"output":      ev.Output,
+							"error":       ev.Error,
+							"duration_ms": ev.Duration.Milliseconds(),
+						})
+					}
+				}
+
+				turnCtx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+				defer cancel()
+				out, err := loop.ProcessTurnWithObserver(turnCtx, req.Message, sessionKey, "tui", "default", observer)
+				if err != nil {
+					writeEvent("error", map[string]any{"error": err.Error()})
+					writeEvent("done", map[string]any{})
+					return
+				}
+				writeEvent("assistant_final", map[string]any{
+					"content":    out.Final,
+					"tools_used": out.ToolsUsed,
+				})
+				writeEvent("done", map[string]any{})
 			})
 
 			srv := &http.Server{Handler: mux}
@@ -184,4 +288,18 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeSSE(w http.ResponseWriter, event string, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "event: %s\n", event); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
+		return err
+	}
+	return nil
 }

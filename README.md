@@ -238,12 +238,15 @@ HTTP endpoints over the Unix socket:
 ```http
 GET /api/health
 POST /api/chat
+POST /api/chat/stream
 Content-Type: application/json
 
 {"message":"hello","session_key":"default"}
 ```
 
-`session_key` is optional. With `--dir`, the default is `default` and is shared with `clawlet agent --dir ...`. Without `--dir`, gateway defaults to `gateway:default` and CLI defaults to `cli:default`.
+`POST /api/chat/stream` returns Server-Sent Events for TUI clients, including `tool_start`, `tool_end`, `assistant_final`, `error`, and `done` events. Tool output includes command stderr when emitted by the `exec` tool.
+
+`session_key` is optional. With `--dir`, the default is `default` and is shared with `clawlet agent --dir ...`. Without `--dir`, gateway defaults to `gateway:default` and stdout CLI defaults to `cli:default`.
 
 ## CLI Reference
 
@@ -251,7 +254,7 @@ Content-Type: application/json
 | --- | --- |
 | `clawlet onboard` | Initialize a workspace and write a minimal config. |
 | `clawlet status` | Print the effective configuration (after defaults and routing). |
-| `clawlet agent` | Run the agent in CLI mode (interactive or single message). |
+| `clawlet agent` | Open the TUI by default. Use `-m` for stdout one-shot or `--stdout` for stdout interactive mode. |
 | `clawlet gateway [--dir DIR]` | Run the long-lived Unix-socket gateway (internal TUI/API + cron + heartbeat). |
 | `clawlet cron list` | List scheduled jobs. |
 | `clawlet cron add` | Add a scheduled job. |

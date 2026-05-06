@@ -30,13 +30,13 @@ func TestNewIndexManager_Disabled(t *testing.T) {
 
 func TestIndexManager_SearchAndRead(t *testing.T) {
 	ws := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(ws, "memory"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(ws, ".clawlet", "memory"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(ws, "MEMORY.md"), []byte("# Long-term Memory\n\n- project codename is Nebula\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(ws, ".clawlet", "memory", "MEMORY.md"), []byte("# Long-term Memory\n\n- project codename is Nebula\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(ws, "memory", "2026-02-14.md"), []byte("We decided to use sqlite vector search for memory recall.\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(ws, ".clawlet", "memory", "2026-02-14.md"), []byte("We decided to use sqlite vector search for memory recall.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -50,7 +50,7 @@ func TestIndexManager_SearchAndRead(t *testing.T) {
 	cfg.Agents.Defaults.MemorySearch.Model = "text-embedding-3-small"
 	cfg.Agents.Defaults.MemorySearch.Remote.BaseURL = server.URL + "/v1"
 	cfg.Agents.Defaults.MemorySearch.Remote.APIKey = "test-key"
-	cfg.Agents.Defaults.MemorySearch.Store.Path = filepath.Join(ws, ".memory", "index.sqlite")
+	cfg.Agents.Defaults.MemorySearch.Store.Path = filepath.Join(ws, ".clawlet", "memory", "index.sqlite")
 
 	mgr, err := NewIndexManager(cfg, ws)
 	if err != nil {
@@ -70,7 +70,7 @@ func TestIndexManager_SearchAndRead(t *testing.T) {
 	}
 	found := false
 	for _, r := range results {
-		if strings.Contains(r.Path, "memory/2026-02-14.md") {
+		if strings.Contains(r.Path, ".clawlet/memory/2026-02-14.md") {
 			found = true
 			break
 		}
@@ -79,11 +79,11 @@ func TestIndexManager_SearchAndRead(t *testing.T) {
 		t.Fatalf("expected daily memory file in results, got: %+v", results)
 	}
 
-	text, rp, err := mgr.ReadFile("memory/2026-02-14.md", ReadFileOptions{From: 1, Lines: 1})
+	text, rp, err := mgr.ReadFile(".clawlet/memory/2026-02-14.md", ReadFileOptions{From: 1, Lines: 1})
 	if err != nil {
 		t.Fatalf("ReadFile error: %v", err)
 	}
-	if rp != "memory/2026-02-14.md" {
+	if rp != ".clawlet/memory/2026-02-14.md" {
 		t.Fatalf("resolved path=%q", rp)
 	}
 	if !strings.Contains(text, "sqlite vector search") {

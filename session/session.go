@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ type Message struct {
 
 type metadataLine struct {
 	Type      string         `json:"_type"`
+	Key       string         `json:"key,omitempty"`
 	CreatedAt string         `json:"created_at"`
 	UpdatedAt string         `json:"updated_at"`
 	Metadata  map[string]any `json:"metadata"`
@@ -76,6 +78,42 @@ func (m *Manager) Save(s *Session) error {
 	return nil
 }
 
+func (m *Manager) List() ([]*Session, error) {
+	sessions, err := List(m.Dir)
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	for i, s := range sessions {
+		if cached, ok := m.cache[s.Key]; ok {
+			sessions[i] = cached
+		}
+	}
+	m.mu.Unlock()
+	return sessions, nil
+}
+
+func (m *Manager) LoadExisting(key string) (*Session, error) {
+	m.mu.Lock()
+	if s, ok := m.cache[key]; ok {
+		m.mu.Unlock()
+		return s, nil
+	}
+	m.mu.Unlock()
+	return Load(m.Dir, key)
+}
+
+func (m *Manager) Create(key string) (*Session, error) {
+	s, err := m.GetOrCreate(key)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.Save(s); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
 func Load(dir, key string) (*Session, error) {
 	path := filepath.Join(dir, safeFilename(strings.ReplaceAll(key, ":", "_"))+".jsonl")
 	f, err := os.Open(path)
@@ -106,6 +144,9 @@ func Load(dir, key string) (*Session, error) {
 		if raw["_type"] == "metadata" {
 			var ml metadataLine
 			if err := json.Unmarshal([]byte(line), &ml); err == nil {
+				if strings.TrimSpace(ml.Key) != "" {
+					s.Key = strings.TrimSpace(ml.Key)
+				}
 				if t, err := time.Parse(time.RFC3339Nano, ml.CreatedAt); err == nil {
 					s.CreatedAt = t
 				}
@@ -133,6 +174,32 @@ func Load(dir, key string) (*Session, error) {
 		s.UpdatedAt = time.Now()
 	}
 	return s, nil
+}
+
+func List(dir string) ([]*Session, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	out := make([]*Session, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".jsonl" {
+			continue
+		}
+		key := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+		s, err := Load(dir, key)
+		if err != nil || s == nil {
+			continue
+		}
+		out = append(out, s)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].UpdatedAt.After(out[j].UpdatedAt)
+	})
+	return out, nil
 }
 
 func New(key string) *Session {
@@ -243,6 +310,7 @@ func Save(dir string, s *Session) error {
 
 	meta := metadataLine{
 		Type:      "metadata",
+		Key:       s.Key,
 		CreatedAt: s.CreatedAt.Format(time.RFC3339Nano),
 		UpdatedAt: s.UpdatedAt.Format(time.RFC3339Nano),
 		Metadata:  s.Metadata,

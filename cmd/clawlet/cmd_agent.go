@@ -11,26 +11,37 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/mosaxiv/clawlet/agent"
+	clawlettui "github.com/mosaxiv/clawlet/tui"
 	"github.com/urfave/cli/v3"
 )
 
 func cmdAgent() *cli.Command {
 	return &cli.Command{
 		Name:  "agent",
-		Usage: "run an agent in CLI mode",
+		Usage: "run an agent (TUI by default; stdout with --message or --stdout)",
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "message", Aliases: []string{"m"}, Usage: "single message (non-interactive)"},
 			&cli.StringFlag{Name: "session", Aliases: []string{"s"}, Usage: "session key"},
 			&cli.StringFlag{Name: "dir", Usage: "project directory (default: ~/.clawlet/workspace)"},
 			&cli.IntFlag{Name: "max-iters", Value: 20, Usage: "max tool-call iterations"},
+			&cli.BoolFlag{Name: "stdout", Usage: "use stdout/plain mode instead of TUI"},
+			&cli.BoolFlag{Name: "tui", Usage: "use TUI mode (default when --message is not set)"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
+			msg := cmd.String("message")
+			dirFlag := strings.TrimSpace(cmd.String("dir"))
+			if msg == "" && !cmd.Bool("stdout") {
+				return clawlettui.RunWithOptions(ctx, clawlettui.RunOptions{
+					ProjectPath: dirFlag,
+					SessionKey:  strings.TrimSpace(cmd.String("session")),
+				})
+			}
+
 			cfg, _, err := loadConfig()
 			if err != nil {
 				return err
 			}
 
-			dirFlag := strings.TrimSpace(cmd.String("dir"))
 			wsAbs, sessionsDir, err := resolveDir(dirFlag)
 			if err != nil {
 				return err
@@ -82,7 +93,6 @@ func cmdAgent() *cli.Command {
 			fmt.Fprintln(os.Stderr, dimStyle.Sprintf("sessions: %s", sessionsDir))
 			fmt.Fprintln(os.Stderr, dimStyle.Sprintf("session: %s", sessionKey))
 
-			msg := cmd.String("message")
 			if msg != "" {
 				return runSingle(ctx, a, msg, userStyle, agentStyle, errStyle, dimStyle)
 			}

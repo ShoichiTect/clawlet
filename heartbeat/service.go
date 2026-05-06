@@ -13,7 +13,7 @@ import (
 const (
 	DefaultIntervalSec = 30 * 60
 
-	DefaultPrompt = "Read HEARTBEAT.md in your workspace (if it exists).\n" +
+	DefaultPrompt = "Read .clawlet/HEARTBEAT.md in your workspace (if it exists).\n" +
 		"Follow any instructions or tasks listed there.\n" +
 		"If nothing needs attention, reply with just: HEARTBEAT_OK"
 
@@ -119,7 +119,7 @@ func (s *Service) tick(ctx context.Context) {
 }
 
 func (s *Service) readHeartbeatFile() string {
-	p := filepath.Join(s.workspace, "HEARTBEAT.md")
+	p := filepath.Join(s.workspace, ".clawlet", "HEARTBEAT.md")
 	b, err := os.ReadFile(p)
 	if err != nil {
 		return ""

@@ -117,10 +117,10 @@ func saveMinimalConfig(path string, model string, openrouterKey string, openaiKe
 }
 
 func initWorkspace(dir string) error {
-	if err := os.MkdirAll(filepath.Join(dir, "memory"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, ".clawlet", "memory"), 0o755); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "skills"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, ".clawlet", "skills"), 0o755); err != nil {
 		return err
 	}
 
@@ -145,7 +145,7 @@ func initWorkspace(dir string) error {
 	}
 
 	for _, f := range files {
-		outPath := filepath.Join(dir, f.OutName)
+		outPath := filepath.Join(dir, ".clawlet", f.OutName)
 		if _, err := os.Stat(outPath); err == nil {
 			continue
 		}
@@ -164,11 +164,11 @@ func initWorkspace(dir string) error {
 		_ = os.WriteFile(outPath, buf.Bytes(), 0o644)
 	}
 
-	mem := filepath.Join(dir, "memory", "MEMORY.md")
+	mem := filepath.Join(dir, ".clawlet", "memory", "MEMORY.md")
 	if _, err := os.Stat(mem); err != nil {
 		_ = os.WriteFile(mem, []byte("# Long-term Memory\n\n"), 0o644)
 	}
-	today := filepath.Join(dir, "memory", time.Now().Format("2006-01-02")+".md")
+	today := filepath.Join(dir, ".clawlet", "memory", time.Now().Format("2006-01-02")+".md")
 	if _, err := os.Stat(today); err != nil {
 		_ = os.WriteFile(today, []byte("# "+time.Now().Format("2006-01-02")+"\n\n"), 0o644)
 	}

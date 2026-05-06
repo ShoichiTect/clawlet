@@ -40,6 +40,7 @@ type TurnInput struct {
 	SessionUserText string      // text to store in session history for the user message
 	Channel         string
 	ChatID          string
+	Observer        TurnObserver // optional per-turn observer; falls back to TurnRunner.Observer
 }
 
 // TurnOutput holds the result of a turn.
@@ -86,6 +87,10 @@ func (tr *TurnRunner) Run(ctx context.Context, input TurnInput, sess *session.Se
 	messages = append(messages, input.UserMessage)
 
 	toolsDefs := tr.Tools.Definitions()
+	observer := input.Observer
+	if observer == nil {
+		observer = tr.Observer
+	}
 
 	var final string
 	toolsUsed := make([]string, 0, 8)
@@ -100,8 +105,8 @@ func (tr *TurnRunner) Run(ctx context.Context, input TurnInput, sess *session.Se
 			}
 			messages = appendToolRound(messages, res.Content, res.ToolCalls, func(tc llm.ToolCall) string {
 				argsPreview := previewJSON(tc.Arguments, 200)
-				if tr.Observer != nil {
-					tr.Observer(ToolEvent{Phase: ToolStart, Name: tc.Name, Args: argsPreview})
+				if observer != nil {
+					observer(ToolEvent{Phase: ToolStart, Name: tc.Name, Args: argsPreview})
 				}
 				start := time.Now()
 				out, err := tr.Tools.Execute(ctx, tools.Context{
@@ -110,14 +115,14 @@ func (tr *TurnRunner) Run(ctx context.Context, input TurnInput, sess *session.Se
 					SessionKey: sess.Key,
 				}, tc.Name, tc.Arguments)
 				dur := time.Since(start)
-				if tr.Observer != nil {
+				if observer != nil {
 					ev := ToolEvent{Phase: ToolEnd, Name: tc.Name, Duration: dur}
 					if err != nil {
 						ev.Error = err.Error()
 					} else {
 						ev.Output = out
 					}
-					tr.Observer(ev)
+					observer(ev)
 				}
 				if err != nil {
 					return "error: " + err.Error()

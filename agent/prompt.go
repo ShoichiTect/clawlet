@@ -61,7 +61,7 @@ func BuildSystemPrompt(opts PromptOpts) string {
 
 	// Bootstrap files from workspace (optional).
 	for _, fn := range []string{"AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"} {
-		p := filepath.Join(opts.Workspace, fn)
+		p := filepath.Join(opts.Workspace, ".clawlet", fn)
 		if bb, err := os.ReadFile(p); err == nil && len(bb) > 0 {
 			b.WriteString("## " + fn + "\n\n")
 			b.Write(bb)
